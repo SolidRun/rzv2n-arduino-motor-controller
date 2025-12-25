@@ -1,0 +1,103 @@
+================================================================================
+                        MECANUM 4WD ROBOT CONTROLLER
+================================================================================
+
+PROJECT OVERVIEW
+----------------
+Arduino-based Mecanum wheel robot with:
+  - 4 DC motors with encoders
+  - PS2 controller support
+  - Serial command interface
+  - Bluetooth bridge for wireless control
+
+
+QUICK START
+-----------
+
+1. BUILD & UPLOAD ARDUINO CODE:
+   pio run -t upload
+
+2. SETUP GUI TOOLS (first time):
+   ./install.sh
+
+3. RUN CONTROL GUI:
+   python3 run.py
+
+
+PROJECT STRUCTURE
+-----------------
+  ../src/main.cpp        Arduino firmware
+  ../lib/                Arduino libraries (motors, PS2, encoders)
+  ../duc/                Hardware documentation & diagrams
+  robot_test.py          GUI controller (Serial & Bluetooth)
+  run.py                 GUI launcher
+  install.sh             One-command setup
+  bt_bridge/             Bluetooth-to-Serial bridge service
+
+
+CONTROL METHODS
+---------------
+
+1. PS2 CONTROLLER (direct):
+   - D-pad: Forward/Backward/Turn
+   - L1/R1: Strafe left/right
+   - L2/R2 + D-pad: Diagonal movement
+
+2. SERIAL/USB (via GUI):
+   - Connect Arduino via USB
+   - Run: python3 run.py
+   - Use keyboard: WASD + QE + Space
+
+3. BLUETOOTH (via bridge):
+   - Install bridge: sudo bt_bridge/install.sh
+   - Connect to "Arduino_BT_Bridge" from any device
+   - Send commands wirelessly
+
+
+SERIAL COMMANDS
+---------------
+  FWD,<speed>,<ticks>    Move forward
+  BWD,<speed>,<ticks>    Move backward
+  TURN,<speed>,<ticks>   Turn (positive=left, negative=right)
+  STOP                   Emergency stop
+  READ                   Read encoder values
+  SYNC                   Calibrate motors
+  FWDS                   Smart forward with PID
+
+Parameters:
+  speed: 20-255
+  ticks: encoder ticks (e.g., 1000)
+
+
+KEYBOARD CONTROLS
+-----------------
+  W/S         Forward/Backward
+  A/D         Strafe Left/Right
+  Q/E         Turn Left/Right
+  Space/Esc   Emergency Stop
+  R           Read Encoders
+
+
+REQUIREMENTS
+------------
+  Arduino:  PlatformIO (pio run)
+  Python:   3.6+, tkinter, pyserial
+  Optional: pybluez (for Bluetooth)
+
+
+TROUBLESHOOTING
+---------------
+Q: Permission denied on serial port?
+A: sudo usermod -a -G dialout $USER
+   (logout and login again)
+
+Q: GUI won't start?
+A: sudo apt install python3-tk
+
+Q: Install script fails?
+A: chmod +x install.sh && ./install.sh
+
+Q: Bluetooth not working?
+A: Use Serial/USB mode - it works without Bluetooth!
+
+================================================================================

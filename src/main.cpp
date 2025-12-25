@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <Wire.h>
 #include "PS2X_lib.h"
 #include "QGPMaker_MotorShield.h"

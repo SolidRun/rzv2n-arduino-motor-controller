@@ -1,0 +1,133 @@
+================================================================================
+                    BLUETOOTH-ARDUINO BRIDGE (Python)
+================================================================================
+
+PURPOSE
+-------
+Forward commands from Bluetooth clients to Arduino via USB serial.
+Runs on a device with both Bluetooth and USB (Raspberry Pi, Linux PC, etc).
+
+
+FILES
+-----
+  bt_arduino_bridge.py   - Main service (Bluetooth setup, connection handling)
+  handle_connection.py   - Per-connection handler (serial communication)
+  install.sh             - System installation script
+  uninstall.sh           - System removal script
+  test_handler.py        - Test serial communication directly
+
+
+QUICK START
+-----------
+1. Connect Arduino via USB
+
+2. Install as service (recommended):
+   sudo ./install.sh
+
+3. Or run manually:
+   sudo python3 bt_arduino_bridge.py
+
+4. Connect from phone/PC to "Arduino_BT_Bridge"
+
+5. Send commands (e.g., FWD,100,1000)
+
+
+SERVICE COMMANDS
+----------------
+  sudo systemctl start bt-arduino-bridge    # Start
+  sudo systemctl stop bt-arduino-bridge     # Stop
+  sudo systemctl restart bt-arduino-bridge  # Restart
+  sudo systemctl status bt-arduino-bridge   # Check status
+  sudo journalctl -u bt-arduino-bridge -f   # View logs
+
+
+LOG FILES
+---------
+  /tmp/bt_bridge_commands.log   - Commands sent/received (most useful)
+  /tmp/bt_arduino_bridge.log    - Service info log
+  /tmp/bt_bridge_debug.log      - Detailed debug log
+
+Watch logs:
+  tail -f /tmp/bt_bridge_commands.log
+
+
+LOG FORMAT
+----------
+  [BT_RX]         Command received from Bluetooth
+  [ARDUINO_TX]    Command sent to Arduino
+  [ARDUINO_RX]    Response from Arduino
+  [BT_TX]         Response sent to Bluetooth client
+  [BT_CONNECT]    Client connected
+  [BT_DISCONNECT] Client disconnected
+
+Example:
+  [2025-12-24 16:30:21.789] [BT_RX] FWD,100,1000
+  [2025-12-24 16:30:21.801] [ARDUINO_TX] FWD,100,1000 | bytes=13
+  [2025-12-24 16:30:21.910] [ARDUINO_RX] BUSY
+  [2025-12-24 16:30:21.920] [BT_TX] BUSY
+
+
+ARDUINO COMMANDS
+----------------
+  FWD,<speed>,<ticks>    Move forward
+  BWD,<speed>,<ticks>    Move backward
+  TURN,<speed>,<ticks>   Turn (positive=left, negative=right)
+  STOP                   Emergency stop
+  READ                   Read encoder values
+  SYNC                   Calibrate motors
+  FWDS                   Smart forward with PID
+
+Parameters:
+  speed: 20-255
+  ticks: encoder ticks (e.g., 1000)
+
+
+TESTING
+-------
+1. Test serial directly (without Bluetooth):
+   sudo python3 test_handler.py
+
+2. Test with GUI client:
+   cd ../
+   python3 robot_test.py
+
+
+TROUBLESHOOTING
+---------------
+Q: Service won't start?
+A: Check Bluetooth adapter:
+   hciconfig hci0
+   sudo rfkill unblock all
+
+Q: Can't find Arduino?
+A: Check USB:
+   ls -la /dev/ttyACM* /dev/ttyUSB*
+
+Q: Commands not reaching Arduino?
+A: Check command log:
+   tail -f /tmp/bt_bridge_commands.log
+
+   Should see both [ARDUINO_TX] and [ARDUINO_RX]
+
+Q: PySerial not installed?
+A: Install it:
+   sudo apt install python3-serial
+   # or
+   pip3 install pyserial
+
+Q: Permission denied on serial port?
+A: Add user to dialout group:
+   sudo usermod -a -G dialout $USER
+
+
+DEPENDENCIES
+------------
+  - python3
+  - python3-serial (PySerial)
+  - bluez, bluez-tools
+  - rfkill
+
+Install all:
+  sudo apt install python3 python3-serial bluetooth bluez bluez-tools rfkill
+
+================================================================================

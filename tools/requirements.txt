@@ -1,0 +1,2 @@
+pyserial>=3.5
+pybluez-updated>=0.23; platform_system == "Linux"

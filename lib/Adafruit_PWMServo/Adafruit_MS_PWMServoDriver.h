@@ -51,6 +51,13 @@ class Adafruit_MS_PWMServoDriver {
   void setPWMFreq(float freq);
   void setPWM(uint8_t num, uint16_t on, uint16_t off);
 
+  // Batch update multiple PWM channels in single I2C transaction
+  // Uses auto-increment mode for efficiency
+  void setPWMBatch(uint8_t startNum, uint8_t count, const uint16_t* onValues, const uint16_t* offValues);
+
+  // Update all 16 channels at once (most efficient)
+  void setAllPWM(const uint16_t* offValues);
+
  private:
   uint8_t _i2caddr;
 

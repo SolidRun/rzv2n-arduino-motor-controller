@@ -111,3 +111,52 @@ void Adafruit_MS_PWMServoDriver::write8(uint8_t addr, uint8_t d) {
 #endif
   WIRE.endTransmission();
 }
+
+void Adafruit_MS_PWMServoDriver::setPWMBatch(uint8_t startNum, uint8_t count,
+                                              const uint16_t* onValues,
+                                              const uint16_t* offValues) {
+  // Uses auto-increment mode (enabled in setPWMFreq) to write multiple channels
+  // Each channel has 4 bytes: ON_L, ON_H, OFF_L, OFF_H
+  WIRE.beginTransmission(_i2caddr);
+  WIRE.write(LED0_ON_L + 4 * startNum);
+
+  for (uint8_t i = 0; i < count; i++) {
+    uint16_t on = onValues ? onValues[i] : 0;
+    uint16_t off = offValues[i];
+    WIRE.write(on & 0xFF);
+    WIRE.write(on >> 8);
+    WIRE.write(off & 0xFF);
+    WIRE.write(off >> 8);
+  }
+
+  WIRE.endTransmission();
+}
+
+void Adafruit_MS_PWMServoDriver::setAllPWM(const uint16_t* offValues) {
+  // Write all 16 channels in one transaction
+  // Note: I2C buffer on Arduino Uno is 32 bytes, so we may need to split
+  // 16 channels * 4 bytes = 64 bytes, too large for single transaction
+  // Split into two transactions of 8 channels each
+
+  // First 8 channels (0-7)
+  WIRE.beginTransmission(_i2caddr);
+  WIRE.write(LED0_ON_L);
+  for (uint8_t i = 0; i < 8; i++) {
+    WIRE.write(0);              // ON_L = 0
+    WIRE.write(0);              // ON_H = 0
+    WIRE.write(offValues[i] & 0xFF);
+    WIRE.write(offValues[i] >> 8);
+  }
+  WIRE.endTransmission();
+
+  // Next 8 channels (8-15)
+  WIRE.beginTransmission(_i2caddr);
+  WIRE.write(LED0_ON_L + 32);   // Channel 8 starts at offset 32
+  for (uint8_t i = 8; i < 16; i++) {
+    WIRE.write(0);
+    WIRE.write(0);
+    WIRE.write(offValues[i] & 0xFF);
+    WIRE.write(offValues[i] >> 8);
+  }
+  WIRE.endTransmission();
+}

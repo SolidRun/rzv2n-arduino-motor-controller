@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
 Bluetooth to Arduino Bridge - Connection Handler
-Called by rfcomm watch when a Bluetooth client connects
+Bidirectional relay: BT <-> Arduino
+
+- Continuously reads from Arduino and forwards to BT
+- Receives commands from BT and forwards to Arduino
+- Uses select() to handle both directions without blocking
 """
 
 import sys
@@ -9,18 +13,21 @@ import os
 import serial
 import time
 import select
+import threading
+import subprocess
 from datetime import datetime
 
 # Configuration
-BT_CHANNEL = 1
 ARDUINO_BAUD = 9600
 ARDUINO_PORT = "/dev/ttyACM0"
 DEBUG_LOG = "/tmp/bt_bridge_debug.log"
 CMD_LOG = "/tmp/bt_bridge_commands.log"
 SERVICE_LOG = "/tmp/bt_arduino_bridge.log"
 
+
 class Logger:
-    """Simple logger for the bridge"""
+    """Thread-safe logger"""
+    _lock = threading.Lock()
 
     @staticmethod
     def _timestamp():
@@ -32,233 +39,220 @@ class Logger:
 
     @staticmethod
     def debug(msg):
-        with open(DEBUG_LOG, 'a') as f:
-            f.write(f"[{Logger._timestamp()}] DEBUG: {msg}\n")
+        with Logger._lock:
+            with open(DEBUG_LOG, 'a') as f:
+                f.write(f"[{Logger._timestamp()}] DEBUG: {msg}\n")
 
     @staticmethod
     def info(msg):
-        line = f"[{Logger._timestamp()}] INFO: {msg}\n"
-        with open(SERVICE_LOG, 'a') as f:
-            f.write(line)
-        print(line, end='', flush=True)
+        with Logger._lock:
+            line = f"[{Logger._timestamp()}] INFO: {msg}\n"
+            with open(SERVICE_LOG, 'a') as f:
+                f.write(line)
+            print(line, end='', flush=True)
 
     @staticmethod
     def cmd(msg):
-        with open(CMD_LOG, 'a') as f:
-            f.write(f"[{Logger._timestamp_ms()}] {msg}\n")
+        with Logger._lock:
+            with open(CMD_LOG, 'a') as f:
+                f.write(f"[{Logger._timestamp_ms()}] {msg}\n")
 
     @staticmethod
     def error(msg):
-        line = f"[{Logger._timestamp()}] ERROR: {msg}\n"
-        with open(SERVICE_LOG, 'a') as f:
-            f.write(line)
-        with open(DEBUG_LOG, 'a') as f:
-            f.write(line)
-        print(line, end='', file=sys.stderr, flush=True)
+        with Logger._lock:
+            line = f"[{Logger._timestamp()}] ERROR: {msg}\n"
+            with open(SERVICE_LOG, 'a') as f:
+                f.write(line)
+            print(line, end='', file=sys.stderr, flush=True)
 
 
 class ArduinoBridge:
-    """Bridges Bluetooth RFCOMM connection to Arduino serial"""
+    """Bidirectional bridge between Bluetooth and Arduino"""
 
     def __init__(self, rfcomm_device, arduino_port=ARDUINO_PORT, baudrate=ARDUINO_BAUD):
         self.rfcomm_device = rfcomm_device
         self.arduino_port = arduino_port
         self.baudrate = baudrate
         self.arduino = None
-        self.rfcomm_fd = None
+        self.bt_fd_read = None
+        self.bt_fd_write = None
+        self.running = False
 
     def setup_arduino(self):
         """Initialize Arduino serial connection"""
         Logger.info(f"Initializing Arduino at {self.arduino_port}")
 
         try:
-            # Open serial connection with proper settings
             self.arduino = serial.Serial(
                 port=self.arduino_port,
                 baudrate=self.baudrate,
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.1,  # 100ms timeout for reads
-                write_timeout=1.0,  # 1s timeout for writes
-                xonxoff=False,  # No software flow control
-                rtscts=False,   # No hardware flow control
-                dsrdtr=False    # No DSR/DTR flow control
+                timeout=0,  # Non-blocking reads
+                write_timeout=1.0,
+                xonxoff=False,
+                rtscts=False,
+                dsrdtr=False
             )
 
-            # Flush any existing data
             self.arduino.reset_input_buffer()
             self.arduino.reset_output_buffer()
 
-            Logger.info(f"Arduino configured: {self.arduino_port} @ {self.baudrate} baud, 8N1, raw mode")
+            Logger.info(f"Arduino configured: {self.arduino_port} @ {self.baudrate}")
 
-            # Wait for Arduino to reset (common with Arduino auto-reset on serial connection)
+            # Wait for Arduino reset
             time.sleep(2)
-
-            # Flush again after reset
             self.arduino.reset_input_buffer()
-            self.arduino.reset_output_buffer()
 
             Logger.info("Arduino ready")
             return True
 
-        except serial.SerialException as e:
-            Logger.error(f"Failed to open Arduino serial: {e}")
-            return False
         except Exception as e:
-            Logger.error(f"Unexpected error setting up Arduino: {e}")
+            Logger.error(f"Failed to open Arduino: {e}")
             return False
 
     def open_rfcomm(self):
-        """Open the RFCOMM device for reading"""
+        """Open RFCOMM device for read and write"""
         try:
-            self.rfcomm_fd = os.open(self.rfcomm_device, os.O_RDONLY | os.O_NONBLOCK)
-            Logger.info(f"Opened RFCOMM device: {self.rfcomm_device}")
+            # Disable echo on RFCOMM device to prevent command reflection
+            subprocess.run(['stty', '-F', self.rfcomm_device, '-echo', 'raw'], check=False)
+
+            # Open for read/write with non-blocking
+            self.bt_fd_read = os.open(self.rfcomm_device, os.O_RDWR | os.O_NONBLOCK)
+            self.bt_fd_write = self.bt_fd_read  # Use same fd for both
+            Logger.info(f"Opened RFCOMM for read/write: {self.rfcomm_device}")
             return True
         except Exception as e:
-            Logger.error(f"Failed to open RFCOMM device: {e}")
+            Logger.error(f"Failed to open RFCOMM: {e}")
             return False
 
-    def send_to_arduino(self, cmd):
-        """Send command to Arduino with newline termination"""
-        if not self.arduino or not self.arduino.is_open:
-            Logger.error("Arduino not connected")
-            return None
-
-        try:
-            # Send command with newline
-            message = f"{cmd}\n".encode('utf-8')
-            self.arduino.write(message)
-            self.arduino.flush()  # Ensure data is sent immediately
-
-            Logger.info(f">>> ARDUINO TX: [{cmd}]")
-            Logger.cmd(f"[ARDUINO_TX] {cmd} | bytes={len(message)}")
-
-            # Try to read response (with timeout)
-            time.sleep(0.1)  # Give Arduino time to process
-
-            if self.arduino.in_waiting > 0:
-                try:
-                    response = self.arduino.readline().decode('utf-8', errors='ignore').strip()
-                    if response:
-                        Logger.info(f"<<< ARDUINO RX: [{response}]")
-                        Logger.cmd(f"[ARDUINO_RX] {response}")
-                        return response
-                except Exception as e:
-                    Logger.debug(f"Error reading Arduino response: {e}")
-
-            # No response or empty response
-            return "OK"
-
-        except serial.SerialTimeoutException:
-            Logger.error("Timeout writing to Arduino")
-            return "ERROR"
-        except Exception as e:
-            Logger.error(f"Error sending to Arduino: {e}")
-            return "ERROR"
-
     def send_to_bluetooth(self, msg):
-        """Send response back to Bluetooth client"""
+        """Send message to Bluetooth client"""
         try:
-            # Open for writing (we opened read-only for the main loop)
-            with open(self.rfcomm_device, 'w') as f:
-                f.write(f"{msg}\n")
-                f.flush()
+            data = f"{msg}\n".encode('utf-8')
+            os.write(self.bt_fd_write, data)
+            time.sleep(0.02)  # Delay to ensure separate BT transmission
+            Logger.info(f">>> BT TX: [{msg}]")
             Logger.cmd(f"[BT_TX] {msg}")
             return True
         except Exception as e:
-            Logger.error(f"Error sending to Bluetooth: {e}")
+            Logger.error(f"Error sending to BT: {e}")
+            return False
+
+    def send_to_arduino(self, cmd):
+        """Send command to Arduino"""
+        if not self.arduino or not self.arduino.is_open:
+            return False
+
+        try:
+            message = f"{cmd}\n".encode('utf-8')
+            self.arduino.write(message)
+            self.arduino.flush()
+            Logger.info(f">>> ARDUINO TX: [{cmd}]")
+            Logger.cmd(f"[ARDUINO_TX] {cmd}")
+            return True
+        except Exception as e:
+            Logger.error(f"Error sending to Arduino: {e}")
             return False
 
     def run(self):
-        """Main relay loop"""
+        """Main bidirectional relay loop"""
         Logger.info(f"=== NEW CONNECTION on {self.rfcomm_device} ===")
-        Logger.cmd(f"[BT_CONNECT] Client connected to {self.rfcomm_device}")
 
-        # Setup Arduino
         if not self.setup_arduino():
-            Logger.error("Failed to setup Arduino, exiting")
             return 1
 
-        # Open RFCOMM device
         if not self.open_rfcomm():
-            Logger.error("Failed to open RFCOMM device, exiting")
             if self.arduino:
                 self.arduino.close()
             return 1
 
-        Logger.info("Starting command relay loop...")
+        Logger.info("Starting bidirectional relay...")
+        self.running = True
 
-        # Buffer for incoming Bluetooth data
         bt_buffer = ""
+        arduino_buffer = ""
+        last_cmd = ""  # Track last command sent to filter echo
 
         try:
-            while True:
-                # Use select to check if data is available (non-blocking with timeout)
-                ready, _, _ = select.select([self.rfcomm_fd], [], [], 0.1)
+            while self.running:
+                # Check both BT and Arduino for data
+                # Arduino uses pyserial (has fileno), BT uses file descriptor
+                arduino_fd = self.arduino.fileno()
 
-                if ready:
-                    # Read available data from Bluetooth
+                ready_read, _, _ = select.select(
+                    [self.bt_fd_read, arduino_fd], [], [], 0.05
+                )
+
+                # === Read from Bluetooth, send to Arduino ===
+                if self.bt_fd_read in ready_read:
                     try:
-                        data = os.read(self.rfcomm_fd, 1024).decode('utf-8', errors='ignore')
+                        data = os.read(self.bt_fd_read, 1024).decode('utf-8', errors='ignore')
 
                         if not data:
-                            # EOF - connection closed
-                            Logger.info("Bluetooth client disconnected (EOF)")
+                            Logger.info("BT client disconnected (EOF)")
                             break
 
-                        # Add to buffer
                         bt_buffer += data
 
                         # Process complete lines
                         while '\n' in bt_buffer or '\r' in bt_buffer:
-                            # Split on newline or carriage return
                             if '\n' in bt_buffer:
                                 line, bt_buffer = bt_buffer.split('\n', 1)
                             else:
                                 line, bt_buffer = bt_buffer.split('\r', 1)
 
-                            # Clean up the command
                             cmd = line.strip()
-
-                            if not cmd:
-                                Logger.debug("Empty line, skipping")
-                                continue
-
-                            # Log raw input
-                            Logger.debug(f"BT raw: {cmd.encode('utf-8').hex()}")
-                            Logger.info(f">>> BT RX: [{cmd}]")
-                            Logger.cmd(f"[BT_RX] {cmd}")
-
-                            # Send to Arduino and get response
-                            response = self.send_to_arduino(cmd)
-
-                            if response:
-                                self.send_to_bluetooth(response)
-                            else:
-                                self.send_to_bluetooth("ERROR: Arduino not connected")
+                            if cmd:
+                                Logger.info(f"<<< BT RX: [{cmd}]")
+                                Logger.cmd(f"[BT_RX] {cmd}")
+                                last_cmd = cmd  # Store to filter echo
+                                self.send_to_arduino(cmd)
 
                     except OSError as e:
-                        if e.errno == 11:  # EAGAIN - no data available
-                            continue
-                        else:
-                            Logger.error(f"Error reading from Bluetooth: {e}")
+                        if e.errno != 11:  # Not EAGAIN
+                            Logger.error(f"BT read error: {e}")
                             break
+
+                # === Read from Arduino, send to Bluetooth ===
+                if arduino_fd in ready_read:
+                    try:
+                        # Read available data from Arduino
+                        if self.arduino.in_waiting > 0:
+                            data = self.arduino.read(self.arduino.in_waiting).decode('utf-8', errors='ignore')
+
+                            if data:
+                                arduino_buffer += data
+
+                                # Process complete lines
+                                while '\n' in arduino_buffer:
+                                    line, arduino_buffer = arduino_buffer.split('\n', 1)
+                                    line = line.strip()
+
+                                    if line:
+                                        # Filter out echoed command
+                                        if line == last_cmd:
+                                            Logger.info(f"<<< ARDUINO RX (echo filtered): [{line}]")
+                                            last_cmd = ""  # Clear after filtering
+                                        else:
+                                            Logger.info(f"<<< ARDUINO RX: [{line}]")
+                                            Logger.cmd(f"[ARDUINO_RX] {line}")
+                                            self.send_to_bluetooth(line)
+
                     except Exception as e:
-                        Logger.error(f"Unexpected error in read loop: {e}")
-                        break
+                        Logger.error(f"Arduino read error: {e}")
 
         except KeyboardInterrupt:
-            Logger.info("Interrupted by user")
+            Logger.info("Interrupted")
 
         finally:
-            # Cleanup
-            Logger.info(f"Connection closed on {self.rfcomm_device}")
-            Logger.cmd("[BT_DISCONNECT] Connection closed")
+            self.running = False
+            Logger.info("Connection closed")
 
-            if self.rfcomm_fd is not None:
+            if self.bt_fd_read is not None:
                 try:
-                    os.close(self.rfcomm_fd)
+                    os.close(self.bt_fd_read)
                 except:
                     pass
 
@@ -272,15 +266,11 @@ class ArduinoBridge:
 
 
 def main():
-    """Main entry point"""
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <rfcomm_device>", file=sys.stderr)
         return 1
 
-    rfcomm_device = sys.argv[1]
-
-    # Create and run bridge
-    bridge = ArduinoBridge(rfcomm_device)
+    bridge = ArduinoBridge(sys.argv[1])
     return bridge.run()
 
 

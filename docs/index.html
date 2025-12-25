@@ -1,0 +1,1199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mecanum 4WD Robot Controller - Documentation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        header {
+            text-align: center;
+            padding: 40px 20px;
+            background: linear-gradient(135deg, #0f3460 0%, #1a1a2e 100%);
+            border-radius: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            color: #00d9ff;
+            margin-bottom: 10px;
+            text-shadow: 0 0 20px rgba(0,217,255,0.5);
+        }
+
+        header p {
+            font-size: 1.2em;
+            color: #a0a0a0;
+        }
+
+        /* Navigation */
+        nav {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 30px;
+        }
+
+        nav a {
+            padding: 12px 24px;
+            background: #0f3460;
+            color: #00d9ff;
+            text-decoration: none;
+            border-radius: 25px;
+            transition: all 0.3s;
+            border: 2px solid #00d9ff;
+        }
+
+        nav a:hover, nav a.active {
+            background: #00d9ff;
+            color: #1a1a2e;
+        }
+
+        /* Sections */
+        section {
+            background: rgba(15, 52, 96, 0.5);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+        }
+
+        section h2 {
+            color: #00d9ff;
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #00d9ff;
+        }
+
+        section h3 {
+            color: #4ade80;
+            font-size: 1.3em;
+            margin: 20px 0 10px 0;
+        }
+
+        /* Feature Grid */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .feature-card {
+            background: linear-gradient(135deg, #1a1a2e 0%, #0f3460 100%);
+            border-radius: 15px;
+            padding: 25px;
+            border-left: 4px solid #00d9ff;
+            transition: transform 0.3s;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+        }
+
+        .feature-card h4 {
+            color: #00d9ff;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+
+        .feature-card .icon {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        /* Architecture Diagram */
+        .architecture-diagram {
+            background: #1a1a2e;
+            border-radius: 15px;
+            padding: 30px;
+            margin: 20px 0;
+            overflow-x: auto;
+        }
+
+        .layer {
+            background: linear-gradient(90deg, #0f3460 0%, #1a1a2e 100%);
+            border: 2px solid #00d9ff;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 10px 0;
+            text-align: center;
+        }
+
+        .layer-title {
+            color: #00d9ff;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        .layer-content {
+            color: #a0a0a0;
+            margin-top: 5px;
+            font-family: monospace;
+        }
+
+        .arrow-down {
+            text-align: center;
+            color: #4ade80;
+            font-size: 2em;
+            margin: 5px 0;
+        }
+
+        /* Flow Diagram */
+        .flow-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+            margin: 20px 0;
+            padding: 20px;
+        }
+
+        .flow-box {
+            background: linear-gradient(135deg, #0f3460 0%, #1a1a2e 100%);
+            border: 2px solid #4ade80;
+            border-radius: 15px;
+            padding: 20px 30px;
+            text-align: center;
+            min-width: 150px;
+        }
+
+        .flow-box.highlight {
+            border-color: #00d9ff;
+            box-shadow: 0 0 20px rgba(0,217,255,0.3);
+        }
+
+        .flow-box h4 {
+            color: #4ade80;
+            margin-bottom: 5px;
+        }
+
+        .flow-arrow {
+            color: #00d9ff;
+            font-size: 2em;
+        }
+
+        /* Motor Diagram */
+        .motor-diagram {
+            display: grid;
+            grid-template-columns: 1fr 2fr 1fr;
+            gap: 20px;
+            align-items: center;
+            margin: 30px 0;
+        }
+
+        .robot-body {
+            background: #2a2a4e;
+            border: 3px solid #4ade80;
+            border-radius: 20px;
+            padding: 40px;
+            position: relative;
+            aspect-ratio: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .wheel {
+            background: linear-gradient(135deg, #0f3460 0%, #1a1a2e 100%);
+            border: 3px solid #00d9ff;
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 15px;
+            font-size: 0.9em;
+        }
+
+        .wheel .motor-name {
+            color: #00d9ff;
+            font-weight: bold;
+        }
+
+        .wheel .channel {
+            color: #a0a0a0;
+            font-size: 0.8em;
+        }
+
+        /* Motor States Table */
+        .state-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        .state-table th, .state-table td {
+            padding: 15px;
+            text-align: center;
+            border: 1px solid #0f3460;
+        }
+
+        .state-table th {
+            background: #0f3460;
+            color: #00d9ff;
+        }
+
+        .state-table tr:nth-child(even) {
+            background: rgba(15, 52, 96, 0.3);
+        }
+
+        .state-high {
+            color: #4ade80;
+            font-weight: bold;
+        }
+
+        .state-low {
+            color: #ef4444;
+            font-weight: bold;
+        }
+
+        .state-pwm {
+            color: #fbbf24;
+            font-weight: bold;
+        }
+
+        /* Command Reference */
+        .command-card {
+            background: #1a1a2e;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+            border-left: 4px solid #fbbf24;
+        }
+
+        .command-card code {
+            background: #0f3460;
+            padding: 5px 15px;
+            border-radius: 5px;
+            font-size: 1.2em;
+            color: #4ade80;
+            display: inline-block;
+            margin-bottom: 10px;
+        }
+
+        .command-card .description {
+            color: #a0a0a0;
+        }
+
+        .command-card .example {
+            background: #0a0a1a;
+            padding: 10px 15px;
+            border-radius: 5px;
+            margin-top: 10px;
+            font-family: monospace;
+            color: #fbbf24;
+        }
+
+        /* Bluetooth Diagram */
+        .bt-flow {
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 20px;
+            padding: 30px;
+            background: #1a1a2e;
+            border-radius: 15px;
+            margin: 20px 0;
+        }
+
+        .bt-node {
+            background: linear-gradient(135deg, #0f3460 0%, #1a1a2e 100%);
+            border: 2px solid #00d9ff;
+            border-radius: 15px;
+            padding: 25px;
+            text-align: center;
+            min-width: 180px;
+        }
+
+        .bt-node .icon {
+            font-size: 3em;
+            margin-bottom: 10px;
+        }
+
+        .bt-node h4 {
+            color: #00d9ff;
+        }
+
+        .bt-node p {
+            color: #a0a0a0;
+            font-size: 0.9em;
+        }
+
+        .bt-connection {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            color: #4ade80;
+        }
+
+        .bt-connection .line {
+            width: 80px;
+            height: 3px;
+            background: linear-gradient(90deg, #00d9ff, #4ade80);
+        }
+
+        .bt-connection span {
+            font-size: 0.8em;
+            margin-top: 5px;
+        }
+
+        /* Control Loop Animation */
+        .control-loop {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            padding: 20px;
+            background: #1a1a2e;
+            border-radius: 15px;
+        }
+
+        .loop-step {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            padding: 15px;
+            background: rgba(15, 52, 96, 0.5);
+            border-radius: 10px;
+            border-left: 4px solid #00d9ff;
+        }
+
+        .loop-step .step-num {
+            background: #00d9ff;
+            color: #1a1a2e;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+
+        .loop-step .step-content h4 {
+            color: #4ade80;
+            margin-bottom: 5px;
+        }
+
+        /* Keyboard Shortcuts */
+        .keyboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+
+        .key-card {
+            background: #1a1a2e;
+            border: 2px solid #4ade80;
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .key-card .key {
+            background: linear-gradient(180deg, #3a3a5e 0%, #2a2a4e 100%);
+            border: 2px solid #5a5a7e;
+            border-radius: 8px;
+            padding: 10px 20px;
+            display: inline-block;
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 10px;
+            box-shadow: 0 4px 0 #1a1a2e;
+        }
+
+        .key-card .action {
+            color: #a0a0a0;
+            font-size: 0.9em;
+        }
+
+        /* Idle State Visualization */
+        .idle-state {
+            background: #1a1a2e;
+            border-radius: 15px;
+            padding: 30px;
+            margin: 20px 0;
+        }
+
+        .idle-visual {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            flex-wrap: wrap;
+            margin: 20px 0;
+        }
+
+        .motor-state-box {
+            background: linear-gradient(135deg, #0f3460 0%, #1a1a2e 100%);
+            border: 3px solid #4ade80;
+            border-radius: 15px;
+            padding: 20px 30px;
+            text-align: center;
+        }
+
+        .motor-state-box.idle {
+            border-color: #4ade80;
+        }
+
+        .motor-state-box.moving {
+            border-color: #fbbf24;
+            animation: pulse 2s infinite;
+        }
+
+        .motor-state-box.brake {
+            border-color: #ef4444;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 10px rgba(251, 191, 36, 0.3); }
+            50% { box-shadow: 0 0 30px rgba(251, 191, 36, 0.6); }
+        }
+
+        .pin-status {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-top: 15px;
+        }
+
+        .pin {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+
+        .pin.high {
+            background: #4ade80;
+            color: #1a1a2e;
+        }
+
+        .pin.low {
+            background: #ef4444;
+            color: white;
+        }
+
+        .pin.pwm {
+            background: linear-gradient(90deg, #fbbf24, #f59e0b);
+            color: #1a1a2e;
+        }
+
+        /* Code Block */
+        pre {
+            background: #0a0a1a;
+            border-radius: 10px;
+            padding: 20px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+            color: #4ade80;
+            border-left: 4px solid #00d9ff;
+        }
+
+        /* Info Box */
+        .info-box {
+            background: rgba(0, 217, 255, 0.1);
+            border: 2px solid #00d9ff;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        .info-box.warning {
+            background: rgba(251, 191, 36, 0.1);
+            border-color: #fbbf24;
+        }
+
+        .info-box.success {
+            background: rgba(74, 222, 128, 0.1);
+            border-color: #4ade80;
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 30px;
+            color: #a0a0a0;
+            border-top: 1px solid #0f3460;
+            margin-top: 40px;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            header h1 {
+                font-size: 1.8em;
+            }
+
+            .motor-diagram {
+                grid-template-columns: 1fr;
+            }
+
+            .bt-flow {
+                flex-direction: column;
+            }
+
+            .bt-connection .line {
+                width: 3px;
+                height: 40px;
+            }
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .tab-btn {
+            padding: 10px 20px;
+            background: #1a1a2e;
+            border: 2px solid #0f3460;
+            color: #a0a0a0;
+            cursor: pointer;
+            border-radius: 10px 10px 0 0;
+            transition: all 0.3s;
+        }
+
+        .tab-btn:hover {
+            background: #0f3460;
+        }
+
+        .tab-btn.active {
+            background: #0f3460;
+            border-color: #00d9ff;
+            color: #00d9ff;
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <h1>Mecanum 4WD Robot Controller</h1>
+            <p>Arduino-based omnidirectional robot with Bluetooth wireless control</p>
+        </header>
+
+        <!-- Navigation -->
+        <nav>
+            <a href="#overview" class="active">Overview</a>
+            <a href="#architecture">Architecture</a>
+            <a href="#motors">Motors</a>
+            <a href="#commands">Commands</a>
+            <a href="#bluetooth">Bluetooth</a>
+            <a href="#gui">GUI & Testing</a>
+        </nav>
+
+        <!-- Overview Section -->
+        <section id="overview">
+            <h2>Project Overview</h2>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="icon">&#9881;</div>
+                    <h4>4 DC Motors</h4>
+                    <p>Quadrature encoders with 4320 counts per revolution for precise positioning</p>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">&#8634;</div>
+                    <h4>Mecanum Wheels</h4>
+                    <p>Omnidirectional movement - forward, backward, strafe, rotate, and diagonals</p>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">&#9889;</div>
+                    <h4>50Hz Control Loop</h4>
+                    <p>Real-time motor control with timer-based updates every 20ms</p>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">&#128225;</div>
+                    <h4>Bluetooth Bridge</h4>
+                    <p>Wireless control via imx8mp or Raspberry Pi bridge device</p>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">&#127918;</div>
+                    <h4>PS2 Controller</h4>
+                    <p>Optional wireless gamepad support with speed presets</p>
+                </div>
+                <div class="feature-card">
+                    <div class="icon">&#128187;</div>
+                    <h4>Python GUI</h4>
+                    <p>Visual control interface with keyboard shortcuts</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Architecture Section -->
+        <section id="architecture">
+            <h2>System Architecture</h2>
+
+            <h3>Layered Design</h3>
+            <div class="architecture-diagram">
+                <div class="layer">
+                    <div class="layer-title">APPLICATION LAYER (src/app/)</div>
+                    <div class="layer-content">robot.cpp &rarr; motion.cpp &rarr; mecanum.cpp &rarr; serial_cmd.cpp</div>
+                </div>
+                <div class="arrow-down">&darr;</div>
+                <div class="layer">
+                    <div class="layer-title">HARDWARE ABSTRACTION LAYER (src/hal/)</div>
+                    <div class="layer-content">motor.cpp &larr; encoder.cpp &larr; timer.cpp &larr; pca9685.cpp</div>
+                </div>
+                <div class="arrow-down">&darr;</div>
+                <div class="layer">
+                    <div class="layer-title">HARDWARE</div>
+                    <div class="layer-content">Arduino Uno &larr; PCA9685 &larr; TB67H450 &larr; Motors/Encoders</div>
+                </div>
+            </div>
+
+            <h3>Control Loop (50Hz - Every 20ms)</h3>
+            <div class="control-loop">
+                <div class="loop-step">
+                    <div class="step-num">1</div>
+                    <div class="step-content">
+                        <h4>Timer ISR Fires</h4>
+                        <p>Timer1 interrupt sets a flag every 20ms (50Hz)</p>
+                    </div>
+                </div>
+                <div class="loop-step">
+                    <div class="step-num">2</div>
+                    <div class="step-content">
+                        <h4>Read Encoder Snapshot</h4>
+                        <p>Atomically read all 4 encoder values with ISR protection</p>
+                    </div>
+                </div>
+                <div class="loop-step">
+                    <div class="step-num">3</div>
+                    <div class="step-content">
+                        <h4>Check Target Progress</h4>
+                        <p>Compare current position with target encoder ticks</p>
+                    </div>
+                </div>
+                <div class="loop-step">
+                    <div class="step-num">4</div>
+                    <div class="step-content">
+                        <h4>Calculate Slowdown Ramp</h4>
+                        <p>Reduce speed as target approaches for smooth stopping</p>
+                    </div>
+                </div>
+                <div class="loop-step">
+                    <div class="step-num">5</div>
+                    <div class="step-content">
+                        <h4>Update Motor PWM</h4>
+                        <p>Send new PWM values to PCA9685 via I2C (400kHz fast mode)</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Motors Section -->
+        <section id="motors">
+            <h2>Motor Control System</h2>
+
+            <h3>Motor Layout &amp; Channel Mapping</h3>
+            <div class="motor-diagram">
+                <div></div>
+                <div class="robot-body">
+                    <div class="wheel">
+                        <div class="motor-name">FL</div>
+                        <div class="channel">CH8, CH9</div>
+                        <div>Motor 0</div>
+                    </div>
+                    <div class="wheel">
+                        <div class="motor-name">FR</div>
+                        <div class="channel">CH10, CH11</div>
+                        <div>Motor 1</div>
+                    </div>
+                    <div class="wheel">
+                        <div class="motor-name">RL</div>
+                        <div class="channel">CH15, CH14</div>
+                        <div>Motor 2</div>
+                    </div>
+                    <div class="wheel">
+                        <div class="motor-name">RR</div>
+                        <div class="channel">CH13, CH12</div>
+                        <div>Motor 3</div>
+                    </div>
+                </div>
+                <div></div>
+            </div>
+
+            <h3>Motor States (TB67H450 H-Bridge)</h3>
+            <table class="state-table">
+                <thead>
+                    <tr>
+                        <th>State</th>
+                        <th>IN1</th>
+                        <th>IN2</th>
+                        <th>Effect</th>
+                        <th>Current Flow</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Forward</strong></td>
+                        <td class="state-pwm">PWM</td>
+                        <td class="state-low">0V (LOW)</td>
+                        <td>Motor spins forward</td>
+                        <td>Yes - proportional to PWM</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Backward</strong></td>
+                        <td class="state-low">0V (LOW)</td>
+                        <td class="state-pwm">PWM</td>
+                        <td>Motor spins backward</td>
+                        <td>Yes - proportional to PWM</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Brake</strong></td>
+                        <td class="state-high">5V (HIGH)</td>
+                        <td class="state-high">5V (HIGH)</td>
+                        <td>Short-circuit brake (quick stop)</td>
+                        <td>No - motor locked</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Coast (IDLE)</strong></td>
+                        <td class="state-low">0V (LOW)</td>
+                        <td class="state-low">0V (LOW)</td>
+                        <td>Motor freewheels</td>
+                        <td style="color: #4ade80; font-weight: bold;">NO CURRENT</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Idle State - No Power Consumption</h3>
+            <div class="idle-state">
+                <div class="info-box success">
+                    <strong>Important:</strong> In IDLE state, all motors are in <strong>COAST</strong> mode with <strong>IN1=0, IN2=0</strong>.
+                    This means <strong>NO current flows</strong> through the motors and they can spin freely.
+                </div>
+
+                <div class="idle-visual">
+                    <div class="motor-state-box idle">
+                        <h4>IDLE / COAST</h4>
+                        <div class="pin-status">
+                            <div class="pin low">IN1 = 0V</div>
+                            <div class="pin low">IN2 = 0V</div>
+                        </div>
+                        <p style="margin-top: 15px; color: #4ade80;">No current - Motors free</p>
+                    </div>
+
+                    <div class="motor-state-box moving">
+                        <h4>MOVING</h4>
+                        <div class="pin-status">
+                            <div class="pin pwm">IN1 = PWM</div>
+                            <div class="pin low">IN2 = 0V</div>
+                        </div>
+                        <p style="margin-top: 15px; color: #fbbf24;">Current flowing</p>
+                    </div>
+
+                    <div class="motor-state-box brake">
+                        <h4>BRAKE (40ms)</h4>
+                        <div class="pin-status">
+                            <div class="pin high">IN1 = 5V</div>
+                            <div class="pin high">IN2 = 5V</div>
+                        </div>
+                        <p style="margin-top: 15px; color: #ef4444;">Short-circuit stop</p>
+                    </div>
+                </div>
+            </div>
+
+            <h3>Movement Completion Sequence</h3>
+            <div class="flow-container">
+                <div class="flow-box">
+                    <h4>MOVING</h4>
+                    <p>Motors active</p>
+                </div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-box">
+                    <h4>Target Reached</h4>
+                    <p>Encoder check</p>
+                </div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-box" style="border-color: #ef4444;">
+                    <h4>BRAKE</h4>
+                    <p>40ms hold</p>
+                </div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-box highlight">
+                    <h4>COAST/IDLE</h4>
+                    <p>No power</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Commands Section -->
+        <section id="commands">
+            <h2>Serial Command Reference</h2>
+
+            <div class="info-box">
+                <strong>Format:</strong> <code>COMMAND,param1,param2\n</code><br>
+                <strong>Baud Rate:</strong> 9600<br>
+                <strong>Speed Range:</strong> 20-255 (PWM duty cycle)<br>
+                <strong>Ticks:</strong> Encoder counts (4320 = 1 wheel revolution)
+            </div>
+
+            <h3>Movement Commands</h3>
+
+            <div class="command-card">
+                <code>FWD,speed,ticks</code>
+                <div class="description">Move forward for specified encoder ticks</div>
+                <div class="example">Example: FWD,100,2000</div>
+            </div>
+
+            <div class="command-card">
+                <code>BWD,speed,ticks</code>
+                <div class="description">Move backward for specified encoder ticks</div>
+                <div class="example">Example: BWD,100,2000</div>
+            </div>
+
+            <div class="command-card">
+                <code>LEFT,speed,ticks</code>
+                <div class="description">Strafe left (sideways movement)</div>
+                <div class="example">Example: LEFT,80,1000</div>
+            </div>
+
+            <div class="command-card">
+                <code>RIGHT,speed,ticks</code>
+                <div class="description">Strafe right (sideways movement)</div>
+                <div class="example">Example: RIGHT,80,1000</div>
+            </div>
+
+            <div class="command-card">
+                <code>TURN,speed,ticks</code>
+                <div class="description">Rotate in place (positive = CCW/left, negative = CW/right)</div>
+                <div class="example">Example: TURN,60,500</div>
+            </div>
+
+            <h3>Control Commands</h3>
+
+            <div class="command-card">
+                <code>STOP</code>
+                <div class="description">Emergency stop - applies brake immediately</div>
+                <div class="example">Example: STOP</div>
+            </div>
+
+            <div class="command-card">
+                <code>READ</code>
+                <div class="description">Read all 4 encoder values (returns 4 lines)</div>
+                <div class="example">Response: 1234\n1230\n1228\n1232\n</div>
+            </div>
+
+            <div class="command-card">
+                <code>SYNC</code>
+                <div class="description">Run calibration routine (~10 seconds, blocking)</div>
+                <div class="example">Response: DONE (after calibration completes)</div>
+            </div>
+
+            <h3>Response Messages</h3>
+            <table class="state-table">
+                <thead>
+                    <tr>
+                        <th>Response</th>
+                        <th>Meaning</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td><code>READY</code></td><td>System initialized and ready</td></tr>
+                    <tr><td><code>DONE</code></td><td>Command completed successfully</td></tr>
+                    <tr><td><code>BUSY</code></td><td>Cannot process - movement in progress</td></tr>
+                    <tr><td><code>ERROR: message</code></td><td>Command failed with reason</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Bluetooth Section -->
+        <section id="bluetooth">
+            <h2>Bluetooth Bridge System</h2>
+
+            <h3>System Architecture</h3>
+            <div class="bt-flow">
+                <div class="bt-node">
+                    <div class="icon">&#128187;</div>
+                    <h4>PC + GUI</h4>
+                    <p>robot_test.py</p>
+                    <p>Control Interface</p>
+                </div>
+
+                <div class="bt-connection">
+                    <div class="line"></div>
+                    <span>Bluetooth RFCOMM</span>
+                </div>
+
+                <div class="bt-node">
+                    <div class="icon">&#128225;</div>
+                    <h4>imx8mp Bridge</h4>
+                    <p>bt_bridge/*.py</p>
+                    <p>Linux SBC</p>
+                </div>
+
+                <div class="bt-connection">
+                    <div class="line"></div>
+                    <span>USB Serial</span>
+                </div>
+
+                <div class="bt-node">
+                    <div class="icon">&#9881;</div>
+                    <h4>Arduino</h4>
+                    <p>/dev/ttyACM0</p>
+                    <p>Motor Controller</p>
+                </div>
+            </div>
+
+            <h3>Bridge Setup (on imx8mp/Linux SBC)</h3>
+
+            <div class="tabs">
+                <button class="tab-btn active" onclick="showTab('install')">1. Install</button>
+                <button class="tab-btn" onclick="showTab('deploy')">2. Deploy Files</button>
+                <button class="tab-btn" onclick="showTab('service')">3. Run Service</button>
+                <button class="tab-btn" onclick="showTab('connect')">4. Connect</button>
+            </div>
+
+            <div id="install" class="tab-content active">
+                <h4>Install Dependencies</h4>
+                <pre>apt-get update
+apt-get install -y python3 python3-serial bluez rfcomm
+pip3 install pyserial</pre>
+            </div>
+
+            <div id="deploy" class="tab-content">
+                <h4>Copy Bridge Files to Device</h4>
+                <pre># On your PC
+scp tools/bt_bridge/*.py user@imx8mp:/opt/bt_arduino_bridge/</pre>
+            </div>
+
+            <div id="service" class="tab-content">
+                <h4>Start the Bridge Service</h4>
+                <pre># Manual start
+python3 /opt/bt_arduino_bridge/bt_arduino_bridge.py
+
+# Or as systemd service
+systemctl enable bt-arduino-bridge
+systemctl start bt-arduino-bridge</pre>
+            </div>
+
+            <div id="connect" class="tab-content">
+                <h4>Connect from PC</h4>
+                <pre># Pair with bridge device
+bluetoothctl
+> scan on
+> pair XX:XX:XX:XX:XX:XX
+> trust XX:XX:XX:XX:XX:XX
+> quit
+
+# Then use GUI to connect via Bluetooth</pre>
+            </div>
+
+            <h3>Bridge Logs (on imx8mp)</h3>
+            <pre># Service log
+cat /tmp/bt_arduino_bridge.log
+
+# Command log (TX/RX with timestamps)
+cat /tmp/bt_bridge_commands.log
+
+# Debug log
+cat /tmp/bt_bridge_debug.log</pre>
+
+            <div class="info-box warning">
+                <strong>Troubleshooting:</strong> If Bluetooth is blocked, run: <code>rfkill unblock bluetooth</code>
+            </div>
+        </section>
+
+        <!-- GUI Section -->
+        <section id="gui">
+            <h2>GUI Control &amp; Testing</h2>
+
+            <h3>Running the GUI</h3>
+            <pre>pip3 install pyserial tkinter pybluez
+python3 tools/robot_test.py</pre>
+
+            <h3>Keyboard Shortcuts</h3>
+            <div class="keyboard-grid">
+                <div class="key-card">
+                    <div class="key">W</div>
+                    <div class="action">Forward</div>
+                </div>
+                <div class="key-card">
+                    <div class="key">S</div>
+                    <div class="action">Backward</div>
+                </div>
+                <div class="key-card">
+                    <div class="key">A</div>
+                    <div class="action">Strafe Left</div>
+                </div>
+                <div class="key-card">
+                    <div class="key">D</div>
+                    <div class="action">Strafe Right</div>
+                </div>
+                <div class="key-card">
+                    <div class="key">Q</div>
+                    <div class="action">Rotate CCW</div>
+                </div>
+                <div class="key-card">
+                    <div class="key">E</div>
+                    <div class="action">Rotate CW</div>
+                </div>
+                <div class="key-card">
+                    <div class="key">Space</div>
+                    <div class="action">STOP</div>
+                </div>
+                <div class="key-card">
+                    <div class="key">R</div>
+                    <div class="action">Read Encoders</div>
+                </div>
+            </div>
+
+            <h3>PS2 Controller Mapping</h3>
+            <table class="state-table">
+                <thead>
+                    <tr>
+                        <th>Button</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>D-pad Up/Down</td><td>Forward / Backward</td></tr>
+                    <tr><td>D-pad Left/Right</td><td>Rotate Left / Right</td></tr>
+                    <tr><td>L1 / R1</td><td>Strafe Left / Right</td></tr>
+                    <tr><td>L2 + D-pad</td><td>Diagonal Forward-Left / Backward-Left</td></tr>
+                    <tr><td>R2 + D-pad</td><td>Diagonal Forward-Right / Backward-Right</td></tr>
+                    <tr><td>Triangle</td><td>Fast Speed (100)</td></tr>
+                    <tr><td>X (Cross)</td><td>Slow Speed (30)</td></tr>
+                </tbody>
+            </table>
+
+            <h3>Quick Test Sequence</h3>
+            <div class="control-loop">
+                <div class="loop-step">
+                    <div class="step-num">1</div>
+                    <div class="step-content">
+                        <h4>Check Communication</h4>
+                        <p>Send <code>READ</code> - should return 4 encoder values (0 if not moved)</p>
+                    </div>
+                </div>
+                <div class="loop-step">
+                    <div class="step-num">2</div>
+                    <div class="step-content">
+                        <h4>Test Movement</h4>
+                        <p>Send <code>FWD,50,500</code> - robot should move forward briefly</p>
+                    </div>
+                </div>
+                <div class="loop-step">
+                    <div class="step-num">3</div>
+                    <div class="step-content">
+                        <h4>Verify Encoders</h4>
+                        <p>Send <code>READ</code> again - values should have increased</p>
+                    </div>
+                </div>
+                <div class="loop-step">
+                    <div class="step-num">4</div>
+                    <div class="step-content">
+                        <h4>Run Calibration</h4>
+                        <p>Send <code>SYNC</code> - robot moves multiple times, then returns DONE</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Footer -->
+        <footer>
+            <p>Mecanum 4WD Robot Controller Documentation</p>
+            <p style="margin-top: 10px; color: #666;">Arduino + PCA9685 + TB67H450 + Bluetooth Bridge</p>
+        </footer>
+    </div>
+
+    <script>
+        // Tab functionality
+        function showTab(tabId) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+
+            // Show selected tab
+            document.getElementById(tabId).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // Smooth scroll for navigation
+        document.querySelectorAll('nav a').forEach(link => {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                const targetId = this.getAttribute('href').substring(1);
+                const targetSection = document.getElementById(targetId);
+
+                if (targetSection) {
+                    targetSection.scrollIntoView({ behavior: 'smooth' });
+
+                    // Update active nav
+                    document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+                    this.classList.add('active');
+                }
+            });
+        });
+
+        // Update nav on scroll
+        window.addEventListener('scroll', function() {
+            const sections = document.querySelectorAll('section');
+            let current = '';
+
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                if (scrollY >= sectionTop - 100) {
+                    current = section.getAttribute('id');
+                }
+            });
+
+            document.querySelectorAll('nav a').forEach(a => {
+                a.classList.remove('active');
+                if (a.getAttribute('href') === '#' + current) {
+                    a.classList.add('active');
+                }
+            });
+        });
+    </script>
+</body>
+</html>

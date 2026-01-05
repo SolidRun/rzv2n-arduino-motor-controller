@@ -32,6 +32,13 @@ bool tickPending();
 void clearTick();
 
 /**
+ * @brief Atomically check and clear tick flag
+ * Use this instead of tickPending()+clearTick() to avoid race conditions
+ * @return true if tick was pending (and is now cleared)
+ */
+bool consumeTick();
+
+/**
  * @brief Get number of timer overruns
  * Overrun = new tick before previous was cleared
  * @return Cumulative overrun count

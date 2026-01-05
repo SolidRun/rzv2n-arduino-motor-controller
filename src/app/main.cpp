@@ -21,8 +21,8 @@ void setup() {
 
 void loop() {
     // Check for timer tick (50Hz control loop)
-    if (Timer::tickPending()) {
-        Timer::clearTick();
+    // Use consumeTick() for atomic check-and-clear (prevents race condition)
+    if (Timer::consumeTick()) {
         Robot::onTick();
     }
 

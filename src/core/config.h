@@ -16,7 +16,7 @@
 //==============================================================================
 
 // Uncomment to enable debug output
-// #define DEBUG_ENABLED
+#define DEBUG_ENABLED
 // #define DEBUG_TIMING
 // #define DEBUG_MOTORS
 
@@ -118,6 +118,9 @@
 
 // Timeouts
 #define MOVE_TIMEOUT_MS         30000   // Max time for any movement
+#define WATCHDOG_TIMEOUT_MS     200     // Stop motors if no command received
+#define STALL_TIMEOUT_MS        2000    // Abort if no encoder progress for this long
+#define STALL_MIN_PROGRESS      50      // Minimum ticks needed to reset stall timer
 
 //==============================================================================
 // Calibration
@@ -128,6 +131,7 @@
 #define CAL_SESSIONS            6
 #define CAL_SETTLE_MS           150
 #define CAL_POST_MS             1000
+#define CAL_TIMEOUT_MS          5000    // Timeout per calibration session
 
 //==============================================================================
 // PS2 Speed Presets

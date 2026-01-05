@@ -46,25 +46,43 @@
 namespace {
     uint8_t i2cAddr = 0x60;
     bool initialized = false;
+    uint16_t i2cErrors = 0;     // Count I2C errors for diagnostics
+    uint8_t lastError = 0;      // Last I2C error code
 
     /**
-     * @brief Write single byte to register
+     * @brief Write single byte to register with error handling
+     * @return true if successful, false on I2C error
      */
-    void writeReg(uint8_t reg, uint8_t val) {
+    bool writeReg(uint8_t reg, uint8_t val) {
         Wire.beginTransmission(i2cAddr);
         Wire.write(reg);
         Wire.write(val);
-        Wire.endTransmission();
+        uint8_t err = Wire.endTransmission();
+        if (err != 0) {
+            lastError = err;
+            i2cErrors++;
+            return false;
+        }
+        return true;
     }
 
     /**
      * @brief Read single byte from register
+     * @return register value, or 0xFF on error
      */
     uint8_t readReg(uint8_t reg) {
         Wire.beginTransmission(i2cAddr);
         Wire.write(reg);
-        Wire.endTransmission();
-        Wire.requestFrom(i2cAddr, (uint8_t)1);
+        uint8_t err = Wire.endTransmission();
+        if (err != 0) {
+            lastError = err;
+            i2cErrors++;
+            return 0xFF;
+        }
+        if (Wire.requestFrom(i2cAddr, (uint8_t)1) != 1) {
+            i2cErrors++;
+            return 0xFF;
+        }
         return Wire.read();
     }
 }
@@ -204,11 +222,30 @@ void setMultiple(uint8_t startChannel, uint8_t count, const uint16_t* duties) {
             Wire.write(off >> 8);
         }
 
-        Wire.endTransmission();
+        uint8_t err = Wire.endTransmission();
+        if (err != 0) {
+            lastError = err;
+            i2cErrors++;
+        }
 
         remaining -= batch;
         offset += batch;
     }
+}
+
+uint16_t getI2CErrors() {
+    return i2cErrors;
+}
+
+void resetI2CErrors() {
+    i2cErrors = 0;
+    lastError = 0;
+}
+
+bool isHealthy() {
+    // Check if we can communicate with the device
+    Wire.beginTransmission(i2cAddr);
+    return (Wire.endTransmission() == 0) && initialized;
 }
 
 } // namespace PCA9685

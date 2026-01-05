@@ -183,6 +183,78 @@ namespace {
             }
         }
 
+        // DIAGFL,speed,ticks (diagonal forward-left)
+        if (match(buffer, "DIAGFL")) {
+            const char* p = afterComma(toComma(buffer));
+            int16_t speed = (int16_t)parseNum(p);
+
+            p = afterComma(toComma(p));
+            int32_t ticks = parseNum(p);
+
+            if (speed > 0 && ticks > 0) {
+                pendingCmd.type = CmdType::MOVE;
+                pendingCmd.dir = Direction::DIAG_FL;
+                pendingCmd.speed = speed;
+                pendingCmd.ticks = ticks;
+                cmdReady = true;
+                return;
+            }
+        }
+
+        // DIAGFR,speed,ticks (diagonal forward-right)
+        if (match(buffer, "DIAGFR")) {
+            const char* p = afterComma(toComma(buffer));
+            int16_t speed = (int16_t)parseNum(p);
+
+            p = afterComma(toComma(p));
+            int32_t ticks = parseNum(p);
+
+            if (speed > 0 && ticks > 0) {
+                pendingCmd.type = CmdType::MOVE;
+                pendingCmd.dir = Direction::DIAG_FR;
+                pendingCmd.speed = speed;
+                pendingCmd.ticks = ticks;
+                cmdReady = true;
+                return;
+            }
+        }
+
+        // DIAGBL,speed,ticks (diagonal backward-left)
+        if (match(buffer, "DIAGBL")) {
+            const char* p = afterComma(toComma(buffer));
+            int16_t speed = (int16_t)parseNum(p);
+
+            p = afterComma(toComma(p));
+            int32_t ticks = parseNum(p);
+
+            if (speed > 0 && ticks > 0) {
+                pendingCmd.type = CmdType::MOVE;
+                pendingCmd.dir = Direction::DIAG_BL;
+                pendingCmd.speed = speed;
+                pendingCmd.ticks = ticks;
+                cmdReady = true;
+                return;
+            }
+        }
+
+        // DIAGBR,speed,ticks (diagonal backward-right)
+        if (match(buffer, "DIAGBR")) {
+            const char* p = afterComma(toComma(buffer));
+            int16_t speed = (int16_t)parseNum(p);
+
+            p = afterComma(toComma(p));
+            int32_t ticks = parseNum(p);
+
+            if (speed > 0 && ticks > 0) {
+                pendingCmd.type = CmdType::MOVE;
+                pendingCmd.dir = Direction::DIAG_BR;
+                pendingCmd.speed = speed;
+                pendingCmd.ticks = ticks;
+                cmdReady = true;
+                return;
+            }
+        }
+
         // Unknown command
         pendingCmd.type = CmdType::UNKNOWN;
         cmdReady = true;
@@ -197,25 +269,38 @@ namespace Serial_Cmd {
 
 void init() {
     Serial.begin(SERIAL_BAUD);
+    // Wait for Serial to be ready (important for some Arduino boards)
+    while (!Serial) {
+        ; // Wait for serial port to connect (needed for native USB)
+    }
+    delay(100);  // Small delay for serial stability
     bufferIdx = 0;
     cmdReady = false;
     buffer[0] = '\0';
 }
 
 void update() {
+    static bool overflow = false;  // Track if we're in overflow state
+
     while (Serial.available() > 0) {
         char c = Serial.read();
 
         if (c == '\n' || c == '\r') {
-            if (bufferIdx > 0) {
+            if (overflow) {
+                // Previous command overflowed - send error and reset
+                sendError("Buffer overflow");
+                overflow = false;
+            } else if (bufferIdx > 0) {
                 buffer[bufferIdx] = '\0';
                 parse();
-                bufferIdx = 0;
             }
+            bufferIdx = 0;
         } else if (bufferIdx < CMD_BUFFER_SIZE - 1) {
             buffer[bufferIdx++] = c;
+        } else {
+            // Buffer overflow - set flag to notify on newline
+            overflow = true;
         }
-        // Overflow: discard extra chars
     }
 }
 

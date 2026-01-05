@@ -8,6 +8,7 @@
 
 #include "motion.h"
 #include "mecanum.h"
+#include "serial_cmd.h"
 #include "../hal/motor.h"
 #include "../hal/encoder.h"
 #include <Arduino.h>
@@ -19,6 +20,30 @@
 namespace {
     MotionTarget target;
     bool velocityMode = false;  // true = PS2 control (no target)
+    volatile bool calibrationAbort = false;  // Flag to abort calibration
+    volatile bool calibrationRunning = false;
+
+    // Stall detection
+    int32_t lastProgressPos = 0;      // Last encoder position when progress was made
+    uint32_t lastProgressTime = 0;    // Time when last progress was detected
+    bool stalled = false;             // Flag indicating motion has stalled
+
+    // Check serial for STOP command during calibration
+    void checkForStopCommand() {
+        Serial_Cmd::update();
+        if (Serial_Cmd::hasCommand()) {
+            Command cmd;
+            if (Serial_Cmd::getCommand(cmd)) {
+                if (cmd.type == CmdType::STOP) {
+                    calibrationAbort = true;
+                    Serial_Cmd::sendMessage("Calibration aborted");
+                } else {
+                    // Other commands rejected during calibration
+                    Serial_Cmd::sendBusy();
+                }
+            }
+        }
+    }
 }
 
 //==============================================================================
@@ -41,6 +66,11 @@ void setTarget(Direction dir, int16_t speed, int32_t ticks) {
     target.ticks = ticks;
     target.active = true;
     velocityMode = false;
+
+    // Reset stall detection
+    lastProgressPos = 0;
+    lastProgressTime = millis();
+    stalled = false;
 
     // Start motors immediately
     if (dir != Direction::STOP && speed > 0 && ticks > 0) {
@@ -93,24 +123,47 @@ void update() {
     // No target ticks = nothing to check
     if (target.ticks <= 0) return;
 
-    // Check if target reached
-    if (Encoder::allReached(target.ticks)) {
-        // Target reached - stop and deactivate
-        target.active = false;
-        return;  // Let state machine handle stopping
-    }
-
-    // Get encoder state
+    // Get encoder state (single read for consistency)
     Encoder::Snapshot snap;
     Encoder::getSnapshot(snap);
 
-    // Calculate remaining distance
+    // Check if target reached using the snapshot we just took
+    if (snap.allReached(target.ticks)) {
+        // Target reached - stop and deactivate
+        target.active = false;
+        stalled = false;
+        return;  // Let state machine handle stopping
+    }
+
+    // Calculate remaining distance using same snapshot
     int32_t avgPos = snap.average();
     int32_t remain = target.ticks - avgPos;
 
     if (remain <= 0) {
         target.active = false;
+        stalled = false;
         return;
+    }
+
+    // Stall detection: check if we're making progress
+    int32_t progressMade = avgPos - lastProgressPos;
+    if (progressMade >= STALL_MIN_PROGRESS) {
+        // We made progress, reset stall timer
+        lastProgressPos = avgPos;
+        lastProgressTime = millis();
+    } else {
+        uint32_t elapsed = millis() - lastProgressTime;
+        if (elapsed > STALL_TIMEOUT_MS) {
+            // No progress for too long - stalled!
+            Serial.print(F("STALL! pos="));
+            Serial.print(avgPos);
+            Serial.print(F(" elapsed="));
+            Serial.println(elapsed);
+            stalled = true;
+            target.active = false;
+            Motor::coastAll();
+            return;  // Let state machine detect via isComplete() or isStalled()
+        }
     }
 
     // Calculate adjusted speed with slowdown
@@ -139,6 +192,10 @@ bool isComplete() {
     return Encoder::allReached(target.ticks);
 }
 
+bool isStalled() {
+    return stalled;
+}
+
 Direction getDirection() {
     return target.dir;
 }
@@ -151,53 +208,164 @@ int32_t remaining() {
     return (remain > 0) ? remain : 0;
 }
 
-void calibrate() {
-    float gainSum[NUM_MOTORS] = {0, 0, 0, 0};
+/**
+ * @brief Run a single calibration session for one direction
+ * @param dir Direction to test
+ * @param gainSum Array to accumulate gain corrections
+ * @param sampleCount Array to track samples per motor
+ * @return 1 if session was valid, 0 if invalid, -1 if aborted
+ */
+namespace {
+    int8_t calibrateDirection(Direction dir, float gainSum[NUM_MOTORS],
+                              uint8_t sampleCount[NUM_MOTORS]) {
+        if (calibrationAbort) return -1;
 
-    for (int session = 0; session < CAL_SESSIONS; session++) {
         Encoder::resetAll();
 
-        // Move forward at calibration speed
+        // Compute expected motor activity for this direction
         int16_t speeds[NUM_MOTORS];
-        Mecanum::compute(Direction::FORWARD, CAL_SPEED, speeds);
+        Mecanum::compute(dir, CAL_SPEED, speeds);
         Motor::setAll(speeds);
 
-        // Wait for target (blocking)
+        // Wait for target with timeout protection and abort check
+        uint32_t startTime = millis();
+        bool timedOut = false;
         while (!Encoder::allReached(CAL_TICKS)) {
+            // Check for STOP command from serial
+            checkForStopCommand();
+            // Check for abort request
+            if (calibrationAbort) {
+                Motor::coastAll();
+                return -1;  // Aborted
+            }
+            if (millis() - startTime > CAL_TIMEOUT_MS) {
+                timedOut = true;
+                break;
+            }
             delay(10);
         }
 
         Motor::brakeAll();
-        delay(CAL_SETTLE_MS);
+
+        if (timedOut) {
+            Motor::coastAll();
+            return 0;  // Invalid but not aborted
+        }
+
+        // Settle delay with abort check
+        uint32_t settleStart = millis();
+        while (millis() - settleStart < CAL_SETTLE_MS) {
+            checkForStopCommand();
+            if (calibrationAbort) {
+                Motor::coastAll();
+                return -1;
+            }
+            delay(10);
+        }
 
         // Read final positions
         Encoder::Snapshot snap;
         Encoder::getSnapshot(snap);
 
-        // Calculate reference (average)
-        float ref = (float)snap.average();
-
-        // Accumulate gain corrections
+        // Calculate reference (average of active motors only)
+        int32_t sum = 0;
+        uint8_t activeCount = 0;
         for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-            int32_t absTicks = abs(snap.ticks[i]);
-            if (absTicks > 0) {
-                gainSum[i] += ref / (float)absTicks;
-            } else {
-                gainSum[i] += 1.0f;
+            if (speeds[i] != 0) {  // Only count motors that were active
+                sum += abs(snap.ticks[i]);
+                activeCount++;
+            }
+        }
+
+        if (activeCount == 0) return 0;
+        float ref = (float)sum / activeCount;
+
+        // Accumulate gain corrections only for active motors
+        for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+            if (speeds[i] != 0) {  // Only calibrate motors that were active
+                int32_t absTicks = abs(snap.ticks[i]);
+                if (absTicks >= 100) {  // Minimum valid movement
+                    gainSum[i] += ref / (float)absTicks;
+                    sampleCount[i]++;
+                }
+            }
+        }
+
+        return 1;  // Valid session
+    }
+}
+
+void abortCalibration() {
+    calibrationAbort = true;
+}
+
+bool isCalibrating() {
+    return calibrationRunning;
+}
+
+bool calibrate() {
+    // Forward-only calibration:
+    // All 4 motors active, measures relative performance
+    // and adjusts gains to equalize wheel speeds
+
+    calibrationRunning = true;
+    calibrationAbort = false;
+
+    float gainSum[NUM_MOTORS] = {0, 0, 0, 0};
+    uint8_t sampleCount[NUM_MOTORS] = {0, 0, 0, 0};
+    bool aborted = false;
+
+    // Run multiple calibration sessions in forward direction
+    for (uint8_t session = 0; session < CAL_SESSIONS && !aborted; session++) {
+        int8_t result = calibrateDirection(Direction::FORWARD, gainSum, sampleCount);
+        if (result == -1) {
+            aborted = true;
+            break;
+        }
+
+        // Brief pause between sessions with abort check
+        if (!aborted && session < CAL_SESSIONS - 1) {
+            uint32_t pauseStart = millis();
+            while (millis() - pauseStart < CAL_SETTLE_MS) {
+                checkForStopCommand();
+                if (calibrationAbort) {
+                    aborted = true;
+                    break;
+                }
+                delay(10);
             }
         }
     }
 
-    // Calculate final gains
-    float gains[NUM_MOTORS];
-    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-        gains[i] = gainSum[i] / CAL_SESSIONS;
+    calibrationRunning = false;
+
+    if (aborted) {
+        Motor::coastAll();
+        return false;  // Calibration was aborted
     }
 
-    // Normalize (max = 1.0)
-    float maxGain = gains[0];
-    for (uint8_t i = 1; i < NUM_MOTORS; i++) {
+    // Check that each motor got enough samples
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+        if (sampleCount[i] < 2) {
+            Motor::coastAll();
+            return false;  // Not enough valid samples for this motor
+        }
+    }
+
+    // Calculate final gains (average per motor)
+    float gains[NUM_MOTORS];
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+        gains[i] = gainSum[i] / sampleCount[i];
+    }
+
+    // Normalize (max = 1.0) with protection against zero
+    float maxGain = 0.0f;
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
         if (gains[i] > maxGain) maxGain = gains[i];
+    }
+    if (maxGain <= 0.0f) {
+        Motor::coastAll();
+        return false;  // All gains are zero - calibration failed
     }
     for (uint8_t i = 0; i < NUM_MOTORS; i++) {
         gains[i] /= maxGain;
@@ -206,6 +374,7 @@ void calibrate() {
     Motor::setAllGains(gains);
     delay(CAL_POST_MS);
     Motor::coastAll();
+    return true;  // Calibration successful
 }
 
 MotorSpeeds getSpeeds(Direction dir, int16_t speed) {

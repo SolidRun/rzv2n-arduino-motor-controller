@@ -77,6 +77,12 @@ bool isMoving();
 bool isComplete();
 
 /**
+ * @brief Check if motion has stalled (no encoder progress)
+ * @return true if motion stalled due to lack of encoder progress
+ */
+bool isStalled();
+
+/**
  * @brief Get current motion direction
  */
 Direction getDirection();
@@ -88,12 +94,28 @@ Direction getDirection();
 int32_t remaining();
 
 /**
- * @brief Run calibration routine (blocking)
+ * @brief Run calibration routine (blocking with timeout)
  *
  * Measures motor response and adjusts gain compensation
  * to make all wheels travel equal distance.
+ *
+ * @return true if calibration succeeded, false if failed
+ *         (timeout, encoder failure, or insufficient valid sessions)
+ *
+ * Note: Call abortCalibration() from another context to stop early.
  */
-void calibrate();
+bool calibrate();
+
+/**
+ * @brief Request calibration abort
+ * Call this to stop calibration early (e.g., on STOP command)
+ */
+void abortCalibration();
+
+/**
+ * @brief Check if calibration is currently running
+ */
+bool isCalibrating();
 
 /**
  * @brief Get motor speeds for direction (utility)

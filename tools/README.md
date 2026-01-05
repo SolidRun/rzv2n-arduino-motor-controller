@@ -57,6 +57,23 @@ tail -f /tmp/bt_bridge_commands.log
 
 The bridge creates a Bluetooth device named "Arduino_BT_Bridge" that forwards commands to Arduino via USB.
 
+### Switching Between PCs
+
+If you have connection issues when connecting from a different PC:
+
+```bash
+# Run reset on the bridge device (iMX8P/Raspberry Pi)
+sudo python3 bt_bridge/bt_reset.py
+
+# Options:
+#   --status   Show current BT status
+#   --soft     Soft reset (keep pairings)
+#   --unpair   Only unpair all devices
+#   (no args)  Full reset (recommended)
+```
+
+Then on the new PC: remove old pairing, scan, and pair again.
+
 See `bt_bridge/USAGE.txt` for details.
 
 ## Serial Commands

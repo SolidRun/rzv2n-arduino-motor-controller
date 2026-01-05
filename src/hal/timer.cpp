@@ -79,6 +79,17 @@ void clearTick() {
     tick = false;
 }
 
+bool consumeTick() {
+    // Atomic check-and-clear to prevent race condition
+    // An ISR could fire between tickPending() and clearTick()
+    uint8_t sreg = SREG;
+    cli();
+    bool wasPending = tick;
+    tick = false;
+    SREG = sreg;
+    return wasPending;
+}
+
 uint16_t overruns() {
     return overrunCount;
 }

@@ -60,6 +60,23 @@ void setDuty(uint8_t channel, uint16_t duty);
  */
 void setMultiple(uint8_t startChannel, uint8_t count, const uint16_t* duties);
 
+/**
+ * @brief Get accumulated I2C error count
+ * @return Number of I2C errors since last reset
+ */
+uint16_t getI2CErrors();
+
+/**
+ * @brief Reset I2C error counter
+ */
+void resetI2CErrors();
+
+/**
+ * @brief Check if PCA9685 is responding
+ * @return true if device is initialized and responding
+ */
+bool isHealthy();
+
 } // namespace PCA9685
 
 #endif // HAL_PCA9685_H

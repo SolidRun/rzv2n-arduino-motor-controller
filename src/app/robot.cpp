@@ -113,6 +113,8 @@ namespace {
 namespace {
     State currentState = State::IDLE;
     uint32_t stateStartTime = 0;
+    uint32_t lastCommandTime = 0;  // Watchdog: last time we received a command
+    bool watchdogEnabled = true;   // Can be disabled for PS2 control
 
     const char* stateNames[] = {"IDLE", "MOVING", "CALIBRATING", "ERROR"};
 
@@ -127,10 +129,14 @@ namespace {
 
     // Handle commands from serial
     bool handleCommand(const Command& cmd) {
+        // Feed the watchdog on any valid command
+        lastCommandTime = millis();
+
         switch (cmd.type) {
             case CmdType::STOP:
                 Motion::stop(true);
                 ps2Active = false;
+                watchdogEnabled = true;  // Re-enable watchdog after stop
                 setState(State::IDLE);
                 Serial_Cmd::sendDone();
                 return true;
@@ -148,18 +154,46 @@ namespace {
                     return false;
                 }
                 setState(State::CALIBRATING);
-                Motion::calibrate();
+                if (Motion::calibrate()) {
+                    // Print the calculated gains
+                    float gains[NUM_MOTORS];
+                    Motor::getAllGains(gains);
+                    Serial_Cmd::sendGains(gains);
+                    Serial_Cmd::sendDone();
+                } else {
+                    Serial_Cmd::sendError("Calibration failed");
+                }
                 setState(State::IDLE);
-                Serial_Cmd::sendDone();
                 return true;
 
             case CmdType::MOVE:
-                if (currentState != State::IDLE) {
+                Serial.print(F("MOVE cmd: dir="));
+                Serial.print((int)cmd.dir);
+                Serial.print(F(" spd="));
+                Serial.print(cmd.speed);
+                Serial.print(F(" ticks="));
+                Serial.println(cmd.ticks);
+
+                // Allow preempting current motion with new command
+                if (currentState == State::MOVING && !ps2Active) {
+                    // Stop current motion immediately, then start new one
+                    Motor::coastAll();
+                    Motion::clearTarget();
+                    // Send DONE for the preempted command so client isn't left waiting
+                    Serial_Cmd::sendDone();
+                }
+                else if (currentState != State::IDLE) {
+                    // Only reject if calibrating or in error state
                     Serial_Cmd::sendBusy();
                     return false;
                 }
                 Motion::setTarget(cmd.dir, cmd.speed, cmd.ticks);
+                // Disable watchdog for tick-based movements (they have MOVE_TIMEOUT)
+                // Watchdog is only for velocity mode (continuous streaming)
+                watchdogEnabled = false;
                 setState(State::MOVING);
+                // Send ACK so client knows command was accepted
+                Serial_Cmd::sendMessage("OK");
                 return true;
 
             case CmdType::UNKNOWN:
@@ -181,12 +215,25 @@ namespace {
             if (dir != Direction::STOP) {
                 Motion::setVelocity(dir, speed);
                 ps2Active = true;
+                watchdogEnabled = false;  // Disable watchdog for PS2 control
                 setState(State::MOVING);
             }
         }
     }
 
     void handleMoving() {
+        // Periodic debug output (every ~1 second)
+        static uint32_t lastDebug = 0;
+        if (millis() - lastDebug > 1000) {
+            lastDebug = millis();
+            Serial.print(F("Moving: stalled="));
+            Serial.print(Motion::isStalled());
+            Serial.print(F(" complete="));
+            Serial.print(Motion::isComplete());
+            Serial.print(F(" remain="));
+            Serial.println(Motion::remaining());
+        }
+
         // PS2 control
         if (ps2Active) {
             if (ps2Connected && ps2HasInput()) {
@@ -202,6 +249,17 @@ namespace {
             // PS2 released
             Motion::stop(false);
             ps2Active = false;
+            watchdogEnabled = true;  // Re-enable watchdog
+            setState(State::IDLE);
+            return;
+        }
+
+        // Serial command - check for stall (encoder not making progress)
+        if (Motion::isStalled()) {
+            Motor::coastAll();
+            Motion::clearTarget();
+            watchdogEnabled = true;
+            Serial_Cmd::sendError("Stalled");
             setState(State::IDLE);
             return;
         }
@@ -210,15 +268,27 @@ namespace {
         if (Motion::isComplete()) {
             Motor::brakeAndRelease(BRAKE_HOLD_MS);
             Motion::clearTarget();
+            watchdogEnabled = true;
             Serial_Cmd::sendDone();
             setState(State::IDLE);
             return;
         }
 
-        // Timeout check
+        // Watchdog check - stop if no command received for too long
+        if (watchdogEnabled && (millis() - lastCommandTime > WATCHDOG_TIMEOUT_MS)) {
+            Motor::coastAll();
+            Motion::clearTarget();
+            watchdogEnabled = true;
+            Serial_Cmd::sendError("Watchdog");
+            setState(State::IDLE);
+            return;
+        }
+
+        // Timeout check (for very long movements)
         if (millis() - stateStartTime > MOVE_TIMEOUT_MS) {
             Motor::coastAll();
             Motion::clearTarget();
+            watchdogEnabled = true;
             Serial_Cmd::sendError("Timeout");
             setState(State::IDLE);
         }
@@ -239,22 +309,32 @@ namespace {
 namespace Robot {
 
 void init() {
+    // Initialize Serial FIRST so we can see debug output
+    Serial_Cmd::init();
+    Serial.println(F("Starting init..."));
+
     // Initialize HAL
+    Serial.println(F("Motor init..."));
     Motor::init();
+    Serial.println(F("Encoder init..."));
     Encoder::init();
+    Serial.println(F("Timer init..."));
     Timer::init();
 
     // Initialize app layers
+    Serial.println(F("Motion init..."));
     Motion::init();
-    Serial_Cmd::init();
 
     // Try PS2 (non-blocking, optional)
+    Serial.println(F("PS2 init..."));
     ps2Init();
 
     currentState = State::IDLE;
     stateStartTime = millis();
+    lastCommandTime = millis();  // Initialize watchdog
     ps2Active = false;
 
+    Serial.println(F("Init complete"));
     Serial_Cmd::sendReady();
     Serial_Cmd::sendMessage("Robot initialized");
 }

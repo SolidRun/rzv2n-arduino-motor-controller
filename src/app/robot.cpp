@@ -207,6 +207,24 @@ namespace {
 
     // State handlers
     void handleIdle() {
+        static uint32_t lastEnc = 0;
+        if (millis() - lastEnc > 1000) {  
+            lastEnc = millis();
+
+            Encoder::Snapshot s;
+            Encoder::getSnapshot(s);
+
+            Serial.print(F("ENC,FL:"));
+            Serial.print(s.ticks[0]);
+            Serial.print(F(",FR:"));
+            Serial.print(s.ticks[3]);
+            Serial.print(F(",RL:"));
+            Serial.print(s.ticks[1]);
+            Serial.print(F(",RR:"));
+            Serial.print(s.ticks[2]);
+            Serial.print(F(",t_us:"));
+            Serial.println(s.timestamp_us);
+        }
         // Check PS2 input
         if (ps2Connected && ps2HasInput()) {
             Direction dir = ps2GetDir();
@@ -224,6 +242,7 @@ namespace {
     void handleMoving() {
         // Periodic debug output (every ~1 second)
         static uint32_t lastDebug = 0;
+        static uint32_t lastEnc = 0;
         if (millis() - lastDebug > 1000) {
             lastDebug = millis();
             Serial.print(F("Moving: stalled="));
@@ -232,6 +251,25 @@ namespace {
             Serial.print(Motion::isComplete());
             Serial.print(F(" remain="));
             Serial.println(Motion::remaining());
+        }
+
+        // 20Hz encoder stream
+        if (millis() - lastEnc > 50) {  
+            lastEnc = millis();
+
+            Encoder::Snapshot s;
+            Encoder::getSnapshot(s);
+
+            Serial.print(F("ENC,FL:"));
+            Serial.print(s.ticks[0]);
+            Serial.print(F(",FR:"));
+            Serial.print(s.ticks[3]);
+            Serial.print(F(",RL:"));
+            Serial.print(s.ticks[1]);
+            Serial.print(F(",RR:"));
+            Serial.print(s.ticks[2]);
+            Serial.print(F(",t_us:"));
+            Serial.println(s.timestamp_us);
         }
 
         // PS2 control

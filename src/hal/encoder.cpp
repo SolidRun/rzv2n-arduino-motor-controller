@@ -124,8 +124,8 @@ void resetAll() {
     for (uint8_t i = 0; i < NUM_ENCODERS; i++) {
         encoders[i].write(0);
     }
-
     SREG = sreg;
+    Serial.println(F("ENC_RESET"));
 }
 
 bool allReached(int32_t target) {

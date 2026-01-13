@@ -66,9 +66,9 @@
 
 // Motor indices (wheel positions for Mecanum drive)
 #define MOTOR_FL                0       // Front-Left
-#define MOTOR_FR                1       // Front-Right
-#define MOTOR_RL                2       // Rear-Left
-#define MOTOR_RR                3       // Rear-Right
+#define MOTOR_FR                3       // Front-Right
+#define MOTOR_RL                1       // Rear-Left
+#define MOTOR_RR                2       // Rear-Right
 
 // Speed limits
 #define SPEED_MIN               20
@@ -106,7 +106,7 @@
 // Deceleration ramp
 #define SLOWDOWN_TICKS          400     // Start slowing before target
 #define SLOWDOWN_KP             0.05f
-#define SLOWDOWN_MIN_SPEED      40
+#define SLOWDOWN_MIN_SPEED      60
 
 // Motor synchronization PID (set to 0 to disable)
 #define SYNC_KP                 0.0f
@@ -119,9 +119,12 @@
 // Timeouts
 #define MOVE_TIMEOUT_MS         30000   // Max time for any movement
 #define WATCHDOG_TIMEOUT_MS     200     // Stop motors if no command received
-#define STALL_TIMEOUT_MS        2000    // Abort if no encoder progress for this long
-#define STALL_MIN_PROGRESS      50      // Minimum ticks needed to reset stall timer
+#define STALL_TIMEOUT_MS        5000    // Abort if no encoder progress for this long
+#define STALL_MIN_PROGRESS      50     // Minimum ticks needed to reset stall timer
 
+#define MIN_WORK_SPEED 80       
+#define SHORT_MOVE_TICKS 1000  
+#define SHORT_REMAIN_TICKS 600
 //==============================================================================
 // Calibration
 //==============================================================================

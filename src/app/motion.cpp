@@ -59,10 +59,11 @@ void init() {
 
 void setTarget(Direction dir, int16_t speed, int32_t ticks) {
     // Reset encoders for fresh target
+    
     Encoder::resetAll();
-
     target.dir = dir;
     target.speed = constrain(speed, 0, SPEED_MAX);
+    //target.ticks = ticks + Encoder::average();
     target.ticks = ticks;
     target.active = true;
     velocityMode = false;
@@ -167,8 +168,12 @@ void update() {
     }
 
     // Calculate adjusted speed with slowdown
-    int16_t adjustedSpeed = Mecanum::calcSlowdown(target.speed, remain);
+    //int16_t adjustedSpeed = Mecanum::calcSlowdown(target.speed, remain);
 
+    int16_t adjustedSpeed = Mecanum::calcSlowdown(target.speed, remain);
+    if (target.ticks <= SHORT_MOVE_TICKS ) {
+        adjustedSpeed = max(adjustedSpeed, MIN_WORK_SPEED);
+    }
     // Compute motor speeds
     int16_t speeds[NUM_MOTORS];
     Mecanum::compute(target.dir, adjustedSpeed, speeds);

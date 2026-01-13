@@ -44,32 +44,32 @@ void compute(Direction dir, int16_t speed, int16_t out[NUM_MOTORS]) {
             // Strafe left: FL/RR backward, FR/RL forward
             out[MOTOR_FL] = -speed;
             out[MOTOR_FR] = speed;
-            out[MOTOR_RL] = speed;
-            out[MOTOR_RR] = -speed;
+            out[MOTOR_RL] = -speed;
+            out[MOTOR_RR] = speed;
             break;
 
         case Direction::RIGHT:
             // Strafe right: FL/RR forward, FR/RL backward
             out[MOTOR_FL] = speed;
             out[MOTOR_FR] = -speed;
-            out[MOTOR_RL] = -speed;
-            out[MOTOR_RR] = speed;
+            out[MOTOR_RL] = speed;
+            out[MOTOR_RR] = -speed;
             break;
 
         case Direction::ROTATE_CCW:
             // Rotate left (counter-clockwise): left side back, right side forward
-            out[MOTOR_FL] = -speed;
-            out[MOTOR_FR] = speed;
-            out[MOTOR_RL] = -speed;
-            out[MOTOR_RR] = speed;
+            out[MOTOR_FL] = -speed;  
+            out[MOTOR_FR] = speed;   
+            out[MOTOR_RL] = speed;  
+            out[MOTOR_RR] = -speed;   
             break;
 
         case Direction::ROTATE_CW:
             // Rotate right (clockwise): left side forward, right side back
             out[MOTOR_FL] = speed;
             out[MOTOR_FR] = -speed;
-            out[MOTOR_RL] = speed;
-            out[MOTOR_RR] = -speed;
+            out[MOTOR_RL] = -speed;
+            out[MOTOR_RR] = speed;
             break;
 
         case Direction::DIAG_FL:

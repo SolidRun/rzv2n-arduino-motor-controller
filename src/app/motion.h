@@ -118,6 +118,13 @@ void abortCalibration();
 bool isCalibrating();
 
 /**
+ * @brief Set velocity using Twist-like command (fixed-point)
+ * @param v_mmps linear velocity in mm/s
+ * @param w_mradps angular velocity in mrad/s
+ */
+void setTwist(int32_t v_mmps, int32_t w_mradps);
+
+/**
  * @brief Get motor speeds for direction (utility)
  */
 MotorSpeeds getSpeeds(Direction dir, int16_t speed);

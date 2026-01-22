@@ -194,7 +194,23 @@ namespace {
                 setState(State::MOVING);
                 // Send ACK so client knows command was accepted
                 Serial_Cmd::sendMessage("OK");
+                return true;    
+
+            case CmdType::TWIST: {
+                ps2Active = false;
+                watchdogEnabled = false;
+
+                Motion::setTwist(cmd.v_mmps, cmd.w_mradps);
+
+                if (cmd.v_mmps == 0 && cmd.w_mradps == 0) {
+                    setState(State::IDLE);
+                } else {
+                    setState(State::MOVING);
+                }
+
+                Serial_Cmd::sendMessage("OK");
                 return true;
+            }
 
             case CmdType::UNKNOWN:
                 Serial_Cmd::sendError("Unknown");
@@ -269,6 +285,7 @@ namespace {
             Serial.print(F(",RR:"));
             Serial.print(s.ticks[2]);
             Serial.print(F(",t_us:"));
+
             Serial.println(s.timestamp_us);
         }
 
@@ -292,6 +309,12 @@ namespace {
             return;
         }
 
+        if (!Motion::isMoving()) {
+            Motor::coastAll();
+            watchdogEnabled = true;
+            setState(State::IDLE);
+            return;
+        }
         // Serial command - check for stall (encoder not making progress)
         if (Motion::isStalled()) {
             Motor::coastAll();

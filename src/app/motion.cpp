@@ -23,6 +23,18 @@ namespace {
     volatile bool calibrationAbort = false;  // Flag to abort calibration
     volatile bool calibrationRunning = false;
 
+    int32_t twist_v_mmps = 0;
+    int32_t twist_w_mradps = 0;
+    uint32_t lastTwistMs = 0;
+
+    const uint32_t TWIST_TIMEOUT_MS = 450;
+
+    int32_t lastTicksVel[NUM_MOTORS] = {0,0,0,0};
+    bool velSyncInit = false;
+
+    const float VEL_SYNC_KP = 0.05f;  
+    const int16_t VEL_SYNC_MAX_CORR = 25; 
+
     // Stall detection
     int32_t lastProgressPos = 0;      // Last encoder position when progress was made
     uint32_t lastProgressTime = 0;    // Time when last progress was detected
@@ -59,7 +71,8 @@ void init() {
 
 void setTarget(Direction dir, int16_t speed, int32_t ticks) {
     // Reset encoders for fresh target
-    
+    velSyncInit = false;
+
     Encoder::resetAll();
     target.dir = dir;
     target.speed = constrain(speed, 0, SPEED_MAX);
@@ -101,6 +114,7 @@ void setVelocity(Direction dir, int16_t speed) {
 void stop(bool brake) {
     target.clear();
     velocityMode = false;
+    velSyncInit = false;
 
     if (brake) {
         Motor::brakeAll();
@@ -118,8 +132,110 @@ void update() {
     // Skip if no active motion
     if (!target.active) return;
 
-    // Velocity mode - nothing to track
-    if (velocityMode) return;
+    // Velocity mode - continuous control (TWIST)
+    if (velocityMode) {
+        static int last_mode = 0; // 0 stop, 1 lin, 2 rot
+        if (millis() - lastTwistMs > TWIST_TIMEOUT_MS) {
+            Motor::coastAll();
+            target.clear();
+            velocityMode = false;
+            velSyncInit = false;   //
+            return;
+        }
+
+
+        const int32_t V_DB = 5;   // 5 mm/s
+        const int32_t W_DB = 10;  // 10 mrad/s
+
+        int32_t v = (abs(twist_v_mmps) > V_DB) ? twist_v_mmps : 0;
+        int32_t w = (abs(twist_w_mradps) > W_DB) ? twist_w_mradps : 0;
+
+        int mode = 0;
+        if (w != 0) mode = 2;
+        else if (v != 0) mode = 1;
+
+        if (mode != last_mode) {
+            velSyncInit = false;
+            last_mode = mode;
+        }
+        
+        if (v == 0 && w == 0) {
+            Motor::coastAll();
+            target.active = false;
+            return;
+        }
+
+
+        Direction dir = Direction::STOP;
+        int16_t pwm = 0;
+
+ 
+        auto clampi = [](int32_t x, int32_t lo, int32_t hi) {
+            if (x < lo) return lo;
+            if (x > hi) return hi;
+            return x;
+        };
+
+
+        const int32_t V_TO_PWM = 2;  // 100mm/s -> 200 PWM
+        const int32_t W_TO_PWM = 1;  // 500mrad/s -> 255 PWM 
+
+        if (w != 0) {
+            dir = (w > 0) ? Direction::ROTATE_CCW : Direction::ROTATE_CW;
+            int32_t p = abs(w) * W_TO_PWM;
+            p = clampi(p, MIN_WORK_SPEED, 255);
+            pwm = (int16_t)p;
+        } else {
+            dir = (v > 0) ? Direction::FORWARD : Direction::BACKWARD;
+            int32_t p = abs(v) * V_TO_PWM;
+            p = clampi(p, MIN_WORK_SPEED, 255);
+            pwm = (int16_t)p;
+        }
+
+        int16_t speeds[NUM_MOTORS];
+        Mecanum::compute(dir, pwm, speeds);
+
+        Encoder::Snapshot snap;
+        Encoder::getSnapshot(snap);
+
+        if (!velSyncInit) {
+            for (uint8_t i=0; i<NUM_MOTORS; i++) lastTicksVel[i] = snap.ticks[i];
+            velSyncInit = true;
+        } else {
+            int32_t dticks[NUM_MOTORS];
+            int32_t sumAbs = 0;
+
+            for (uint8_t i=0; i<NUM_MOTORS; i++) {
+                dticks[i] = snap.ticks[i] - lastTicksVel[i];
+                lastTicksVel[i] = snap.ticks[i];
+                sumAbs += abs(dticks[i]);
+            }
+
+            int32_t avgAbs = sumAbs / NUM_MOTORS;
+
+
+            if (avgAbs > 10) {
+                for (uint8_t i=0; i<NUM_MOTORS; i++) {
+                    int32_t err = abs(dticks[i]) - avgAbs;
+                    int16_t corr = (int16_t)(err * VEL_SYNC_KP);
+
+                    corr = constrain(corr, -VEL_SYNC_MAX_CORR, VEL_SYNC_MAX_CORR);
+
+                    if (speeds[i] > 0) {
+                        speeds[i] = constrain(speeds[i] - corr, 0, 255);
+                    } else if (speeds[i] < 0) {
+                        speeds[i] = constrain(speeds[i] + corr, -255, 0);
+                    }
+                }
+            }
+        }
+        for (uint8_t i=0; i<NUM_MOTORS; i++) {
+            if (speeds[i] > 0) speeds[i] = max(speeds[i], (int16_t)MIN_WORK_SPEED);
+            if (speeds[i] < 0) speeds[i] = min(speeds[i], (int16_t)-MIN_WORK_SPEED);
+        }
+        Motor::setAll(speeds);
+        return;
+    }   
 
     // No target ticks = nothing to check
     if (target.ticks <= 0) return;
@@ -155,6 +271,11 @@ void update() {
     } else {
         uint32_t elapsed = millis() - lastProgressTime;
         if (elapsed > STALL_TIMEOUT_MS) {
+            if (remain <= STALL_IGNORE_REMAIN_TICKS) {
+                target.active = false;
+                stalled = false;
+                return;
+            }
             // No progress for too long - stalled!
             Serial.print(F("STALL! pos="));
             Serial.print(avgPos);
@@ -168,16 +289,14 @@ void update() {
     }
 
     // Calculate adjusted speed with slowdown
-    //int16_t adjustedSpeed = Mecanum::calcSlowdown(target.speed, remain);
-
     int16_t adjustedSpeed = Mecanum::calcSlowdown(target.speed, remain);
     if (target.ticks <= SHORT_MOVE_TICKS ) {
         adjustedSpeed = max(adjustedSpeed, MIN_WORK_SPEED);
     }
     // Compute motor speeds
     int16_t speeds[NUM_MOTORS];
+    //Mecanum::compute(target.dir, adjustedSpeed, speeds);
     Mecanum::compute(target.dir, adjustedSpeed, speeds);
-
     // Apply motor synchronization
     Mecanum::applySyncCorrection(speeds, snap.ticks, SYNC_KP);
 
@@ -380,6 +499,25 @@ bool calibrate() {
     delay(CAL_POST_MS);
     Motor::coastAll();
     return true;  // Calibration successful
+}
+
+void setTwist(int32_t v_mmps, int32_t w_mradps) {
+    twist_v_mmps = v_mmps;
+    twist_w_mradps = w_mradps;
+    lastTwistMs = millis();
+
+   
+    if (v_mmps == 0 && w_mradps == 0) {
+        Motor::coastAll();      
+        target.clear();
+        velocityMode = false;
+        velSyncInit = false;    
+        return;
+    }
+
+    target.active = true;
+    velocityMode = true;
+    velSyncInit = false;   
 }
 
 MotorSpeeds getSpeeds(Direction dir, int16_t speed) {

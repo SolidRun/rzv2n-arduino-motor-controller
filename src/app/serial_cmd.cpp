@@ -67,7 +67,7 @@ namespace {
 
     // Parse command from buffer
     void parse() {
-        pendingCmd = {CmdType::NONE, Direction::STOP, 0, 0};
+        pendingCmd = {CmdType::NONE, Direction::STOP, 0, 0, 0, 0};
 
         // Simple commands
         if (match(buffer, "STOP")) {
@@ -87,6 +87,20 @@ namespace {
             cmdReady = true;
             return;
         }
+        // TWIST,v_mmps,w_mradps
+        if (match(buffer, "TWIST")) {
+            const char* p = afterComma(toComma(buffer));
+            int32_t v_mmps = parseNum(p);
+
+            p = afterComma(toComma(p));
+            int32_t w_mradps = parseNum(p);
+
+            pendingCmd.type = CmdType::TWIST;
+            pendingCmd.v_mmps = v_mmps;
+            pendingCmd.w_mradps = w_mradps;
+            cmdReady = true;
+            return;
+        }       
 
         // FWD,speed,ticks
         if (match(buffer, "FWD")) {

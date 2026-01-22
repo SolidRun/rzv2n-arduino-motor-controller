@@ -42,7 +42,7 @@
 // Hardware: Serial Communication
 //==============================================================================
 
-#define SERIAL_BAUD             9600
+#define SERIAL_BAUD             115200
 #define CMD_BUFFER_SIZE         32
 
 //==============================================================================
@@ -102,14 +102,14 @@
 //==============================================================================
 // Motion Control
 //==============================================================================
-
+#define STALL_IGNORE_REMAIN_TICKS  50
 // Deceleration ramp
 #define SLOWDOWN_TICKS          400     // Start slowing before target
 #define SLOWDOWN_KP             0.05f
 #define SLOWDOWN_MIN_SPEED      60
 
 // Motor synchronization PID (set to 0 to disable)
-#define SYNC_KP                 0.0f
+#define SYNC_KP                 0.5f
 #define SYNC_KI                 0.0f
 #define SYNC_KD                 0.0f
 
@@ -119,11 +119,11 @@
 // Timeouts
 #define MOVE_TIMEOUT_MS         30000   // Max time for any movement
 #define WATCHDOG_TIMEOUT_MS     200     // Stop motors if no command received
-#define STALL_TIMEOUT_MS        5000    // Abort if no encoder progress for this long
+#define STALL_TIMEOUT_MS        1000    // Abort if no encoder progress for this long
 #define STALL_MIN_PROGRESS      50     // Minimum ticks needed to reset stall timer
 
 #define MIN_WORK_SPEED 80       
-#define SHORT_MOVE_TICKS 1000  
+#define SHORT_MOVE_TICKS 100  
 #define SHORT_REMAIN_TICKS 600
 //==============================================================================
 // Calibration

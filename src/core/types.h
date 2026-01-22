@@ -51,6 +51,7 @@ enum class CmdType : uint8_t {
     READ_ENCODERS,
     CALIBRATE,
     MOVE,           // FWD/BWD/TURN with speed and ticks
+    TWIST, 
     UNKNOWN
 };
 
@@ -137,6 +138,10 @@ struct Command {
     Direction dir;
     int16_t speed;
     int32_t ticks;
+
+    // Velocity streaming (fixed-point)
+    int32_t v_mmps;     // mm/s
+    int32_t w_mradps;   // mrad/s
 };
 
 /**

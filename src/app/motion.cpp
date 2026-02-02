@@ -156,6 +156,7 @@ void update() {
 
         if (mode != last_mode) {
             velSyncInit = false;
+            for (uint8_t i=0;i<NUM_MOTORS;i++) lastTicksVel[i]=0;
             last_mode = mode;
         }
         
@@ -177,18 +178,18 @@ void update() {
         };
 
 
-        const int32_t V_TO_PWM = 2;  // 100mm/s -> 200 PWM
-        const int32_t W_TO_PWM = 1;  // 500mrad/s -> 255 PWM 
+        const int32_t V_TO_PWM = 1;  // 100mm/s -> 200 PWM
+        const int32_t W_TO_PWM = 0.15;  // 500mrad/s -> 200 PWM 
 
         if (w != 0) {
             dir = (w > 0) ? Direction::ROTATE_CCW : Direction::ROTATE_CW;
             int32_t p = abs(w) * W_TO_PWM;
-            p = clampi(p, MIN_WORK_SPEED, 255);
+            p = clampi(p, MIN_WORK_SPEED, 200);
             pwm = (int16_t)p;
         } else {
             dir = (v > 0) ? Direction::FORWARD : Direction::BACKWARD;
             int32_t p = abs(v) * V_TO_PWM;
-            p = clampi(p, MIN_WORK_SPEED, 255);
+            p = clampi(p, MIN_WORK_SPEED, 200);
             pwm = (int16_t)p;
         }
 

@@ -65,66 +65,70 @@ namespace {
         return s;
     }
 
+    // Movement command lookup table: CMD,speed,ticks format
+    // To add a new direction: just add one line to this table
+    struct MoveCmd {
+        const char* name;
+        Direction dir;
+    };
+
+    const MoveCmd moveCmds[] = {
+        {"FWD",    Direction::FORWARD},
+        {"BWD",    Direction::BACKWARD},
+        {"LEFT",   Direction::LEFT},
+        {"RIGHT",  Direction::RIGHT},
+        {"DIAGFL", Direction::DIAG_FL},
+        {"DIAGFR", Direction::DIAG_FR},
+        {"DIAGBL", Direction::DIAG_BL},
+        {"DIAGBR", Direction::DIAG_BR},
+    };
+    constexpr uint8_t NUM_MOVE_CMDS = sizeof(moveCmds) / sizeof(moveCmds[0]);
+
+    // Try to parse a standard move command (CMD,speed,ticks)
+    bool tryParseMove(const char* buf) {
+        for (uint8_t i = 0; i < NUM_MOVE_CMDS; i++) {
+            if (match(buf, moveCmds[i].name)) {
+                const char* p = afterComma(toComma(buf));
+                int16_t speed = (int16_t)parseNum(p);
+                p = afterComma(toComma(p));
+                int32_t ticks = parseNum(p);
+
+                if (speed > 0 && ticks > 0) {
+                    pendingCmd.type = CmdType::MOVE;
+                    pendingCmd.dir = moveCmds[i].dir;
+                    pendingCmd.speed = speed;
+                    pendingCmd.ticks = ticks;
+                    cmdReady = true;
+                    return true;
+                }
+                return false;  // Matched name but invalid params
+            }
+        }
+        return false;  // No match
+    }
+
+    // Parse motor index from name (FL/FR/RL/RR) or number (0-3)
+    int8_t parseMotorIndex(const char* s) {
+        if (s[0] == 'F' && s[1] == 'L') return MOTOR_FL;
+        if (s[0] == 'F' && s[1] == 'R') return MOTOR_FR;
+        if (s[0] == 'R' && s[1] == 'L') return MOTOR_RL;
+        if (s[0] == 'R' && s[1] == 'R') return MOTOR_RR;
+        int32_t idx = parseNum(s);
+        if (idx >= 0 && idx < NUM_MOTORS) return (int8_t)idx;
+        return -1;
+    }
+
     // Parse command from buffer
     void parse() {
-        pendingCmd = {CmdType::NONE, Direction::STOP, 0, 0};
+        pendingCmd = {CmdType::NONE, Direction::STOP, 0, 0, 0, 0, 0, 0, 0};
 
-        // Simple commands
-        if (match(buffer, "STOP")) {
-            pendingCmd.type = CmdType::STOP;
-            cmdReady = true;
-            return;
-        }
+        // Simple commands (no parameters)
+        if (match(buffer, "STOP"))  { pendingCmd.type = CmdType::STOP;          cmdReady = true; return; }
+        if (match(buffer, "READ"))  { pendingCmd.type = CmdType::READ_ENCODERS; cmdReady = true; return; }
+        if (match(buffer, "TENC"))  { pendingCmd.type = CmdType::TEST_ENCODER;  cmdReady = true; return; }
+        if (match(buffer, "CALIB")) { pendingCmd.type = CmdType::CALIBRATE;    cmdReady = true; return; }
 
-        if (match(buffer, "READ")) {
-            pendingCmd.type = CmdType::READ_ENCODERS;
-            cmdReady = true;
-            return;
-        }
-
-        if (match(buffer, "SYNC")) {
-            pendingCmd.type = CmdType::CALIBRATE;
-            cmdReady = true;
-            return;
-        }
-
-        // FWD,speed,ticks
-        if (match(buffer, "FWD")) {
-            const char* p = afterComma(toComma(buffer));
-            int16_t speed = (int16_t)parseNum(p);
-
-            p = afterComma(toComma(p));
-            int32_t ticks = parseNum(p);
-
-            if (speed > 0 && ticks > 0) {
-                pendingCmd.type = CmdType::MOVE;
-                pendingCmd.dir = Direction::FORWARD;
-                pendingCmd.speed = speed;
-                pendingCmd.ticks = ticks;
-                cmdReady = true;
-                return;
-            }
-        }
-
-        // BWD,speed,ticks
-        if (match(buffer, "BWD")) {
-            const char* p = afterComma(toComma(buffer));
-            int16_t speed = (int16_t)parseNum(p);
-
-            p = afterComma(toComma(p));
-            int32_t ticks = parseNum(p);
-
-            if (speed > 0 && ticks > 0) {
-                pendingCmd.type = CmdType::MOVE;
-                pendingCmd.dir = Direction::BACKWARD;
-                pendingCmd.speed = speed;
-                pendingCmd.ticks = ticks;
-                cmdReady = true;
-                return;
-            }
-        }
-
-        // TURN,speed,ticks (positive=left, negative=right)
+        // TURN has special sign-based direction logic (positive=CCW, negative=CW)
         if (match(buffer, "TURN")) {
             const char* p = afterComma(toComma(buffer));
             int16_t speed = (int16_t)parseNum(p);
@@ -147,113 +151,42 @@ namespace {
             }
         }
 
-        // LEFT,speed,ticks (strafe)
-        if (match(buffer, "LEFT")) {
+        // TMOTOR,index,pwm - direct single motor test
+        // index: 0-3 or FL/FR/RL/RR, pwm: -255 to 255
+        if (match(buffer, "TMOTOR")) {
             const char* p = afterComma(toComma(buffer));
-            int16_t speed = (int16_t)parseNum(p);
-
+            int8_t idx = parseMotorIndex(p);
             p = afterComma(toComma(p));
-            int32_t ticks = parseNum(p);
+            int16_t pwm = (int16_t)parseNum(p);
 
-            if (speed > 0 && ticks > 0) {
-                pendingCmd.type = CmdType::MOVE;
-                pendingCmd.dir = Direction::LEFT;
-                pendingCmd.speed = speed;
-                pendingCmd.ticks = ticks;
+            if (idx >= 0) {
+                pendingCmd.type = CmdType::TEST_MOTOR;
+                pendingCmd.motorIndex = (uint8_t)idx;
+                pendingCmd.pwm = constrain(pwm, (int16_t)-255, (int16_t)255);
                 cmdReady = true;
                 return;
             }
         }
 
-        // RIGHT,speed,ticks (strafe)
-        if (match(buffer, "RIGHT")) {
+        // VEL,vx,vy,wz - continuous velocity control
+        if (match(buffer, "VEL")) {
             const char* p = afterComma(toComma(buffer));
-            int16_t speed = (int16_t)parseNum(p);
-
+            int16_t vx = (int16_t)parseNum(p);
             p = afterComma(toComma(p));
-            int32_t ticks = parseNum(p);
+            int16_t vy = (int16_t)parseNum(p);
+            p = afterComma(toComma(p));
+            int16_t wz = (int16_t)parseNum(p);
 
-            if (speed > 0 && ticks > 0) {
-                pendingCmd.type = CmdType::MOVE;
-                pendingCmd.dir = Direction::RIGHT;
-                pendingCmd.speed = speed;
-                pendingCmd.ticks = ticks;
-                cmdReady = true;
-                return;
-            }
+            pendingCmd.type = CmdType::VELOCITY;
+            pendingCmd.vx = vx;
+            pendingCmd.vy = vy;
+            pendingCmd.wz = wz;
+            cmdReady = true;
+            return;
         }
 
-        // DIAGFL,speed,ticks (diagonal forward-left)
-        if (match(buffer, "DIAGFL")) {
-            const char* p = afterComma(toComma(buffer));
-            int16_t speed = (int16_t)parseNum(p);
-
-            p = afterComma(toComma(p));
-            int32_t ticks = parseNum(p);
-
-            if (speed > 0 && ticks > 0) {
-                pendingCmd.type = CmdType::MOVE;
-                pendingCmd.dir = Direction::DIAG_FL;
-                pendingCmd.speed = speed;
-                pendingCmd.ticks = ticks;
-                cmdReady = true;
-                return;
-            }
-        }
-
-        // DIAGFR,speed,ticks (diagonal forward-right)
-        if (match(buffer, "DIAGFR")) {
-            const char* p = afterComma(toComma(buffer));
-            int16_t speed = (int16_t)parseNum(p);
-
-            p = afterComma(toComma(p));
-            int32_t ticks = parseNum(p);
-
-            if (speed > 0 && ticks > 0) {
-                pendingCmd.type = CmdType::MOVE;
-                pendingCmd.dir = Direction::DIAG_FR;
-                pendingCmd.speed = speed;
-                pendingCmd.ticks = ticks;
-                cmdReady = true;
-                return;
-            }
-        }
-
-        // DIAGBL,speed,ticks (diagonal backward-left)
-        if (match(buffer, "DIAGBL")) {
-            const char* p = afterComma(toComma(buffer));
-            int16_t speed = (int16_t)parseNum(p);
-
-            p = afterComma(toComma(p));
-            int32_t ticks = parseNum(p);
-
-            if (speed > 0 && ticks > 0) {
-                pendingCmd.type = CmdType::MOVE;
-                pendingCmd.dir = Direction::DIAG_BL;
-                pendingCmd.speed = speed;
-                pendingCmd.ticks = ticks;
-                cmdReady = true;
-                return;
-            }
-        }
-
-        // DIAGBR,speed,ticks (diagonal backward-right)
-        if (match(buffer, "DIAGBR")) {
-            const char* p = afterComma(toComma(buffer));
-            int16_t speed = (int16_t)parseNum(p);
-
-            p = afterComma(toComma(p));
-            int32_t ticks = parseNum(p);
-
-            if (speed > 0 && ticks > 0) {
-                pendingCmd.type = CmdType::MOVE;
-                pendingCmd.dir = Direction::DIAG_BR;
-                pendingCmd.speed = speed;
-                pendingCmd.ticks = ticks;
-                cmdReady = true;
-                return;
-            }
-        }
+        // All standard directional moves (CMD,speed,ticks)
+        if (tryParseMove(buffer)) return;
 
         // Unknown command
         pendingCmd.type = CmdType::UNKNOWN;
@@ -344,15 +277,6 @@ void sendEncoders(const int32_t values[NUM_ENCODERS]) {
     for (uint8_t i = 0; i < NUM_ENCODERS; i++) {
         Serial.println(values[i]);
     }
-}
-
-void sendGains(const float gains[NUM_MOTORS]) {
-    Serial.print(F("Gains: "));
-    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-        Serial.print(gains[i], 3);
-        if (i < NUM_MOTORS - 1) Serial.print(F(", "));
-    }
-    Serial.println();
 }
 
 void sendMessage(const char* msg) {

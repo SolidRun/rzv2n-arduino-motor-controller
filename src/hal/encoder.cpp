@@ -17,12 +17,18 @@
 //==============================================================================
 
 namespace {
-    // Encoder objects (QGPMaker library handles interrupt setup)
+    // Encoder objects indexed by MOTOR_FL=0, MOTOR_RL=1, MOTOR_RR=2, MOTOR_FR=3
+    // Port numbers and direction come from config.h
     QGPMaker_Encoder encoders[NUM_ENCODERS] = {
-        QGPMaker_Encoder(1),
-        QGPMaker_Encoder(2),
-        QGPMaker_Encoder(3),
-        QGPMaker_Encoder(4)
+        QGPMaker_Encoder(FL_ENC_PORT),  // [0] MOTOR_FL
+        QGPMaker_Encoder(RL_ENC_PORT),  // [1] MOTOR_RL
+        QGPMaker_Encoder(RR_ENC_PORT),  // [2] MOTOR_RR
+        QGPMaker_Encoder(FR_ENC_PORT)   // [3] MOTOR_FR
+    };
+
+    // Encoder direction: 1 = normal, -1 = inverted
+    const int8_t encDir[NUM_ENCODERS] = {
+        FL_ENC_DIR, RL_ENC_DIR, RR_ENC_DIR, FR_ENC_DIR
     };
 }
 
@@ -88,7 +94,7 @@ int32_t read(uint8_t index) {
     value = encoders[index].read();
     SREG = sreg;
 
-    return value;
+    return value * encDir[index];
 }
 
 int32_t readAbs(uint8_t index) {
@@ -101,7 +107,7 @@ void getSnapshot(Snapshot& out) {
     cli();  // Disable interrupts for consistent snapshot
 
     for (uint8_t i = 0; i < NUM_ENCODERS; i++) {
-        out.ticks[i] = encoders[i].read();
+        out.ticks[i] = encoders[i].read() * encDir[i];
     }
     out.timestamp_us = micros();
 

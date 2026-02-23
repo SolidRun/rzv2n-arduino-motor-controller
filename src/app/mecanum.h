@@ -43,18 +43,12 @@ void compute(Direction dir, int16_t speed, int16_t out[NUM_MOTORS]);
 MotorSpeeds computeSpeeds(Direction dir, int16_t speed);
 
 /**
- * @brief Apply synchronization correction based on encoder feedback
- *
- * Adjusts individual motor speeds to keep all wheels in sync.
- * Motors that are ahead get slowed down.
- *
- * @param speeds Input/output motor speeds array
- * @param encoderTicks Current encoder readings
- * @param kp Proportional gain for correction
+ * @brief Calculate acceleration ramp based on distance traveled
+ * @param baseSpeed Target speed
+ * @param currentPos Current encoder position (ticks from start)
+ * @return Adjusted speed (ramped up from ACCEL_MIN_SPEED)
  */
-void applySyncCorrection(int16_t speeds[NUM_MOTORS],
-                        const int32_t encoderTicks[NUM_MOTORS],
-                        float kp);
+int16_t calcAccelRamp(int16_t baseSpeed, int32_t currentPos);
 
 /**
  * @brief Calculate slowdown speed based on remaining distance
@@ -63,6 +57,26 @@ void applySyncCorrection(int16_t speeds[NUM_MOTORS],
  * @return Adjusted speed (reduced near target)
  */
 int16_t calcSlowdown(int16_t baseSpeed, int32_t remainingTicks);
+
+/**
+ * @brief Compute motor speeds from velocity components (inverse kinematics)
+ * @param vx Forward velocity (-255 to 255)
+ * @param vy Lateral velocity (-255 to 255, positive = left)
+ * @param wz Rotational velocity (-255 to 255, positive = CCW)
+ * @param out Output array of 4 motor speeds
+ */
+void computeFromVelocity(int16_t vx, int16_t vy, int16_t wz,
+                         int16_t out[NUM_MOTORS]);
+
+/**
+ * @brief Forward kinematics: wheel speeds → robot velocity
+ * @param wheelDelta Encoder delta ticks per telemetry period (MOVING_TELEMETRY_MS), per motor
+ * @param vx_mm     Output: forward velocity in mm/s
+ * @param vy_mm     Output: lateral velocity in mm/s (positive = left)
+ * @param wz_mrad   Output: angular velocity in mrad/s (positive = CCW)
+ */
+void forwardKinematics(const int16_t wheelDelta[NUM_MOTORS],
+                       int16_t &vx_mm, int16_t &vy_mm, int16_t &wz_mrad);
 
 } // namespace Mecanum
 

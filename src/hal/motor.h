@@ -28,6 +28,14 @@ void init();
 void set(uint8_t motor, int16_t speed);
 
 /**
+ * @brief Set single motor speed directly (bypasses batching)
+ * @param motor Motor index (0-3)
+ * @param speed Raw PWM -255 to +255
+ * Used for diagnostics: tests the raw motor hardware without PID.
+ */
+void setDirect(uint8_t motor, int16_t speed);
+
+/**
  * @brief Set all motor speeds atomically
  * @param speeds Array of 4 speeds (FL, FR, RL, RR)
  */
@@ -61,41 +69,28 @@ void coastAll();
 void emergencyStop();
 
 /**
- * @brief Brake then coast after delay
+ * @brief Brake then coast after delay (BLOCKING - use startBrake for non-blocking)
  * @param brakeMs Duration to hold brake in milliseconds
  */
 void brakeAndRelease(uint16_t brakeMs);
 
 /**
- * @brief Set motor gain compensation
- * @param motor Motor index (0-3)
- * @param gain Gain factor (0.5 to 1.5)
+ * @brief Start a timed brake (non-blocking)
+ * @param ms Duration to hold brake before auto-releasing to coast
+ * Call updateBrake() from main loop to service the timer.
  */
-void setGain(uint8_t motor, float gain);
+void startBrake(uint16_t ms);
 
 /**
- * @brief Get motor gain compensation
- * @param motor Motor index (0-3)
- * @return Gain factor
+ * @brief Service the brake timer - call from main loop
+ * Releases to coast when brake duration expires.
  */
-float getGain(uint8_t motor);
+void updateBrake();
 
 /**
- * @brief Set all motor gains
- * @param gains Array of 4 gain values
+ * @brief Check if a timed brake is currently active
  */
-void setAllGains(const float gains[NUM_MOTORS]);
-
-/**
- * @brief Get all motor gains
- * @param gains Output array for 4 gain values
- */
-void getAllGains(float gains[NUM_MOTORS]);
-
-/**
- * @brief Reset all gains to defaults
- */
-void resetGains();
+bool isBraking();
 
 /**
  * @brief Get current speed setting for motor
@@ -108,6 +103,17 @@ int16_t getSpeed(uint8_t motor);
  * @brief Check if motor driver is initialized
  */
 bool isReady();
+
+/**
+ * @brief Check I2C communication health
+ * @return true if PCA9685 is responding
+ */
+bool checkHealth();
+
+/**
+ * @brief Get accumulated I2C error count
+ */
+uint16_t getI2CErrorCount();
 
 } // namespace Motor
 

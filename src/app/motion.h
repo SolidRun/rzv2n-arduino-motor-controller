@@ -2,7 +2,8 @@
  * @file motion.h
  * @brief High-level motion control
  *
- * Manages motion targets, encoder feedback, and motor synchronization.
+ * Manages motion targets, encoder feedback, and per-motor PID velocity control.
+ * Each motor has its own PI controller for closed-loop speed tracking.
  * Called from the main control loop at fixed rate.
  */
 
@@ -37,8 +38,18 @@ void setTarget(Direction dir, int16_t speed, int32_t ticks);
  * @param speed Speed (0-255)
  *
  * Used for PS2 controller input - no automatic stopping.
+ * Velocity is PID-controlled at 50Hz using encoder feedback.
  */
 void setVelocity(Direction dir, int16_t speed);
+
+/**
+ * @brief Set per-motor velocity targets (PID-controlled)
+ * @param speeds Array of 4 motor speeds (-255 to 255, PWM-scale)
+ *
+ * Used for VEL command (vx/vy/wz inverse kinematics).
+ * Speeds are converted to tick-rate targets and tracked by per-motor PID.
+ */
+void setMotorVelocities(const int16_t speeds[NUM_MOTORS]);
 
 /**
  * @brief Stop all motion immediately
@@ -59,7 +70,7 @@ void clearTarget();
  *   - Encoder feedback reading
  *   - Target progress checking
  *   - Speed ramping/slowdown
- *   - Motor synchronization
+ *   - Per-motor PID velocity control
  *
  * Should be called from timer tick handler.
  */
@@ -94,33 +105,56 @@ Direction getDirection();
 int32_t remaining();
 
 /**
- * @brief Run calibration routine (blocking with timeout)
- *
- * Measures motor response and adjusts gain compensation
- * to make all wheels travel equal distance.
- *
- * @return true if calibration succeeded, false if failed
- *         (timeout, encoder failure, or insufficient valid sessions)
- *
- * Note: Call abortCalibration() from another context to stop early.
+ * @brief Get motor speeds for direction (utility)
  */
-bool calibrate();
+MotorSpeeds getSpeeds(Direction dir, int16_t speed);
+
+//--- Motor Calibration (per-motor speed profiling) ---
+
+enum class CalResult : uint8_t {
+    RUNNING,        // Calibration in progress
+    DONE,           // Completed successfully
+    ABORTED         // Aborted by user (STOP command)
+};
 
 /**
- * @brief Request calibration abort
- * Call this to stop calibration early (e.g., on STOP command)
+ * @brief Start motor calibration sequence
+ * Drives all motors forward, measures per-motor tick rates,
+ * stores results in EEPROM for PID feed-forward.
+ */
+void startCalibration();
+
+/**
+ * @brief Update calibration state machine - call at 50Hz
+ * @return CalResult indicating progress
+ */
+CalResult updateCalibration();
+
+/**
+ * @brief Abort calibration in progress
  */
 void abortCalibration();
 
 /**
- * @brief Check if calibration is currently running
+ * @brief Check if calibration is running
  */
 bool isCalibrating();
 
 /**
- * @brief Get motor speeds for direction (utility)
+ * @brief Get per-motor max tick rate (from calibration or default)
  */
-MotorSpeeds getSpeeds(Direction dir, int16_t speed);
+const uint8_t* getCalMaxTickrate();
+
+/**
+ * @brief Load calibration data from EEPROM
+ * @return true if valid data found
+ */
+bool loadCalibFromEEPROM();
+
+/**
+ * @brief Save calibration data to EEPROM
+ */
+void saveCalibToEEPROM();
 
 } // namespace Motion
 

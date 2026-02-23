@@ -17,15 +17,17 @@
 #include "../hal/encoder.h"
 #include "../hal/timer.h"
 
-// PS2 is optional - use weak linking
+#ifdef ENABLE_PS2
 #include "PS2X_lib.h"
+#endif
 #include <Arduino.h>
 
 //==============================================================================
-// PS2 Controller
+// PS2 Controller (optional, enable with #define ENABLE_PS2 in config.h)
 //==============================================================================
 
 namespace {
+#ifdef ENABLE_PS2
     PS2X ps2;
     bool ps2Connected = false;
     bool ps2Active = false;
@@ -53,10 +55,9 @@ namespace {
         ps2LastRead = now;
         ps2.read_gamepad(false, 0);
 
-        // Check for disconnect
         if (ps2.ButtonDataByte() != 0xFFFF) {
             ps2LastSuccess = now;
-        } else if (now - ps2LastSuccess > 1000) {
+        } else if (now - ps2LastSuccess > PS2_DISCONNECT_MS) {
             ps2Connected = false;
         }
     }
@@ -76,7 +77,6 @@ namespace {
         bool l2 = ps2.Button(PSB_L2);
         bool r2 = ps2.Button(PSB_R2);
 
-        // Diagonal with L2/R2
         if (l2 || r2) {
             if (ps2.Button(PSB_PAD_UP))
                 return l2 ? Direction::DIAG_FL : Direction::DIAG_FR;
@@ -84,11 +84,9 @@ namespace {
                 return l2 ? Direction::DIAG_BL : Direction::DIAG_BR;
         }
 
-        // Strafe with L1/R1
         if (ps2.Button(PSB_L1)) return Direction::LEFT;
         if (ps2.Button(PSB_R1)) return Direction::RIGHT;
 
-        // Basic D-pad
         if (ps2.Button(PSB_PAD_UP)) return Direction::FORWARD;
         if (ps2.Button(PSB_PAD_DOWN)) return Direction::BACKWARD;
         if (ps2.Button(PSB_PAD_LEFT)) return Direction::ROTATE_CCW;
@@ -104,6 +102,10 @@ namespace {
         if (ps2.Button(PSB_CROSS)) return PS2_SPEED_SLOW;
         return PS2_SPEED_NORMAL;
     }
+#else
+    constexpr bool ps2Connected = false;
+    constexpr bool ps2Active = false;
+#endif
 }
 
 //==============================================================================
@@ -116,7 +118,61 @@ namespace {
     uint32_t lastCommandTime = 0;  // Watchdog: last time we received a command
     bool watchdogEnabled = true;   // Can be disabled for PS2 control
 
-    const char* stateNames[] = {"IDLE", "MOVING", "CALIBRATING", "ERROR"};
+    // I2C health monitoring
+    uint32_t lastHealthCheck = 0;
+    uint8_t consecutiveI2CErrors = 0;
+
+    const char* stateNames[] = {"IDLE", "MOVING", "CALIBRATING", "TESTING", "ERROR"};
+
+    // ODOM tracking for VEL mode
+    bool velocityActive = false;        // true when in VEL command mode
+    int32_t odomPrevTicks[NUM_MOTORS];  // Previous encoder readings for delta
+
+    void printOdom() {
+        Encoder::Snapshot s;
+        Encoder::getSnapshot(s);
+
+        int16_t delta[NUM_MOTORS];
+        for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+            delta[i] = (int16_t)(s.ticks[i] - odomPrevTicks[i]);
+            odomPrevTicks[i] = s.ticks[i];
+        }
+
+        int16_t vx, vy, wz;
+        Mecanum::forwardKinematics(delta, vx, vy, wz);
+
+        Serial.print(F("ODOM,"));
+        Serial.print(vx);
+        Serial.print(',');
+        Serial.print(vy);
+        Serial.print(',');
+        Serial.println(wz);
+    }
+
+    // Diagnostic test state
+    uint8_t testMotorIdx = 0;       // Which motor is being tested
+    int16_t testMotorPWM = 0;       // Raw PWM applied
+    bool testEncoderOnly = false;   // true = TENC (no motor), false = TMOTOR
+
+    const char* motorName(uint8_t idx) {
+        static const char* names[] = {"FL", "RL", "RR", "FR"};
+        return (idx < NUM_MOTORS) ? names[idx] : "??";
+    }
+
+    void printEncoderTelemetry() {
+        Encoder::Snapshot s;
+        Encoder::getSnapshot(s);
+        Serial.print(F("ENC,FL:"));
+        Serial.print(s.ticks[MOTOR_FL]);
+        Serial.print(F(",FR:"));
+        Serial.print(s.ticks[MOTOR_FR]);
+        Serial.print(F(",RL:"));
+        Serial.print(s.ticks[MOTOR_RL]);
+        Serial.print(F(",RR:"));
+        Serial.print(s.ticks[MOTOR_RR]);
+        Serial.print(F(",t_us:"));
+        Serial.println(s.timestamp_us);
+    }
 
     void setState(State s) {
         if (currentState != s) {
@@ -134,11 +190,27 @@ namespace {
 
         switch (cmd.type) {
             case CmdType::STOP:
+                if (Motion::isCalibrating()) {
+                    Motion::abortCalibration();
+                }
                 Motion::stop(true);
+#ifdef ENABLE_PS2
                 ps2Active = false;
-                watchdogEnabled = true;  // Re-enable watchdog after stop
+#endif
+                velocityActive = false;
+                watchdogEnabled = true;
                 setState(State::IDLE);
                 Serial_Cmd::sendDone();
+                return true;
+
+            case CmdType::CALIBRATE:
+                if (currentState != State::IDLE) {
+                    Serial_Cmd::sendBusy();
+                    return false;
+                }
+                Motion::startCalibration();
+                watchdogEnabled = false;
+                setState(State::CALIBRATING);
                 return true;
 
             case CmdType::READ_ENCODERS: {
@@ -148,24 +220,6 @@ namespace {
                 return true;
             }
 
-            case CmdType::CALIBRATE:
-                if (currentState != State::IDLE) {
-                    Serial_Cmd::sendBusy();
-                    return false;
-                }
-                setState(State::CALIBRATING);
-                if (Motion::calibrate()) {
-                    // Print the calculated gains
-                    float gains[NUM_MOTORS];
-                    Motor::getAllGains(gains);
-                    Serial_Cmd::sendGains(gains);
-                    Serial_Cmd::sendDone();
-                } else {
-                    Serial_Cmd::sendError("Calibration failed");
-                }
-                setState(State::IDLE);
-                return true;
-
             case CmdType::MOVE:
                 Serial.print(F("MOVE cmd: dir="));
                 Serial.print((int)cmd.dir);
@@ -174,6 +228,7 @@ namespace {
                 Serial.print(F(" ticks="));
                 Serial.println(cmd.ticks);
 
+                velocityActive = false;
                 // Allow preempting current motion with new command
                 if (currentState == State::MOVING && !ps2Active) {
                     // Stop current motion immediately, then start new one
@@ -196,6 +251,68 @@ namespace {
                 Serial_Cmd::sendMessage("OK");
                 return true;
 
+            case CmdType::VELOCITY: {
+                int16_t motorSpeeds[NUM_MOTORS];
+                Mecanum::computeFromVelocity(cmd.vx, cmd.vy, cmd.wz, motorSpeeds);
+                Motion::setMotorVelocities(motorSpeeds);
+                watchdogEnabled = true;
+
+                if (!velocityActive) {
+                    // First VEL: init ODOM tracking and send ACK
+                    velocityActive = true;
+                    Encoder::Snapshot snap;
+                    Encoder::getSnapshot(snap);
+                    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                        odomPrevTicks[i] = snap.ticks[i];
+                    }
+                    Serial_Cmd::sendMessage("OK");
+                }
+                if (currentState != State::MOVING) {
+                    setState(State::MOVING);
+                }
+                return true;
+            }
+
+            case CmdType::TEST_MOTOR:
+                if (currentState != State::IDLE && currentState != State::TESTING) {
+                    Serial_Cmd::sendBusy();
+                    return false;
+                }
+                // Stop any previous test
+                Motor::coastAll();
+                Motion::clearTarget();
+                Encoder::resetAll();
+
+                testMotorIdx = cmd.motorIndex;
+                testMotorPWM = cmd.pwm;
+                testEncoderOnly = false;
+
+                // Apply raw PWM (no gains, no PID)
+                Motor::setDirect(testMotorIdx, testMotorPWM);
+
+                Serial.print(F("TMOTOR,"));
+                Serial.print(motorName(testMotorIdx));
+                Serial.print(F(",pwm:"));
+                Serial.println(testMotorPWM);
+
+                setState(State::TESTING);
+                return true;
+
+            case CmdType::TEST_ENCODER:
+                if (currentState != State::IDLE && currentState != State::TESTING) {
+                    Serial_Cmd::sendBusy();
+                    return false;
+                }
+                Motor::coastAll();
+                Motion::clearTarget();
+                Encoder::resetAll();
+
+                testEncoderOnly = true;
+                Serial.println(F("TENC started"));
+
+                setState(State::TESTING);
+                return true;
+
             case CmdType::UNKNOWN:
                 Serial_Cmd::sendError("Unknown");
                 return false;
@@ -208,24 +325,11 @@ namespace {
     // State handlers
     void handleIdle() {
         static uint32_t lastEnc = 0;
-        if (millis() - lastEnc > 1000) {  
+        if (millis() - lastEnc > IDLE_TELEMETRY_MS) {
             lastEnc = millis();
-
-            Encoder::Snapshot s;
-            Encoder::getSnapshot(s);
-
-            Serial.print(F("ENC,FL:"));
-            Serial.print(s.ticks[0]);
-            Serial.print(F(",FR:"));
-            Serial.print(s.ticks[3]);
-            Serial.print(F(",RL:"));
-            Serial.print(s.ticks[1]);
-            Serial.print(F(",RR:"));
-            Serial.print(s.ticks[2]);
-            Serial.print(F(",t_us:"));
-            Serial.println(s.timestamp_us);
+            printEncoderTelemetry();
         }
-        // Check PS2 input
+#ifdef ENABLE_PS2
         if (ps2Connected && ps2HasInput()) {
             Direction dir = ps2GetDir();
             int16_t speed = ps2GetSpeed();
@@ -233,45 +337,35 @@ namespace {
             if (dir != Direction::STOP) {
                 Motion::setVelocity(dir, speed);
                 ps2Active = true;
-                watchdogEnabled = false;  // Disable watchdog for PS2 control
+                watchdogEnabled = false;
                 setState(State::MOVING);
             }
         }
+#endif
     }
 
     void handleMoving() {
-        // Periodic debug output (every ~1 second)
         static uint32_t lastDebug = 0;
         static uint32_t lastEnc = 0;
-        if (millis() - lastDebug > 1000) {
+
+        // 20Hz telemetry: ODOM in VEL mode, ENC in position mode
+        if (millis() - lastEnc > MOVING_TELEMETRY_MS) {
+            lastEnc = millis();
+            if (velocityActive) {
+                printOdom();
+            } else {
+                printEncoderTelemetry();
+            }
+        }
+
+        // Periodic debug (position mode only, 1Hz)
+        if (!velocityActive && millis() - lastDebug > MOVING_DEBUG_MS) {
             lastDebug = millis();
-            Serial.print(F("Moving: stalled="));
-            Serial.print(Motion::isStalled());
-            Serial.print(F(" complete="));
-            Serial.print(Motion::isComplete());
-            Serial.print(F(" remain="));
+            Serial.print(F("Moving: remain="));
             Serial.println(Motion::remaining());
         }
 
-        // 20Hz encoder stream
-        if (millis() - lastEnc > 50) {  
-            lastEnc = millis();
-
-            Encoder::Snapshot s;
-            Encoder::getSnapshot(s);
-
-            Serial.print(F("ENC,FL:"));
-            Serial.print(s.ticks[0]);
-            Serial.print(F(",FR:"));
-            Serial.print(s.ticks[3]);
-            Serial.print(F(",RL:"));
-            Serial.print(s.ticks[1]);
-            Serial.print(F(",RR:"));
-            Serial.print(s.ticks[2]);
-            Serial.print(F(",t_us:"));
-            Serial.println(s.timestamp_us);
-        }
-
+#ifdef ENABLE_PS2
         // PS2 control
         if (ps2Active) {
             if (ps2Connected && ps2HasInput()) {
@@ -287,10 +381,11 @@ namespace {
             // PS2 released
             Motion::stop(false);
             ps2Active = false;
-            watchdogEnabled = true;  // Re-enable watchdog
+            watchdogEnabled = true;
             setState(State::IDLE);
             return;
         }
+#endif
 
         // Serial command - check for stall (encoder not making progress)
         if (Motion::isStalled()) {
@@ -304,7 +399,7 @@ namespace {
 
         // Serial command - check completion
         if (Motion::isComplete()) {
-            Motor::brakeAndRelease(BRAKE_HOLD_MS);
+            Motor::startBrake(BRAKE_HOLD_MS);
             Motion::clearTarget();
             watchdogEnabled = true;
             Serial_Cmd::sendDone();
@@ -332,9 +427,55 @@ namespace {
         }
     }
 
+    void handleTesting() {
+        static uint32_t lastPrint = 0;
+        if (millis() - lastPrint < MOVING_TELEMETRY_MS) return;
+        lastPrint = millis();
+
+        Encoder::Snapshot snap;
+        Encoder::getSnapshot(snap);
+
+        if (testEncoderOnly) {
+            // TENC mode: stream all encoders (user spins wheels manually)
+            printEncoderTelemetry();
+        } else {
+            // TMOTOR mode: show all encoders so user can verify pairing
+            // The tested motor's encoder should be moving, others near 0
+            Serial.print(F("TEST,"));
+            Serial.print(motorName(testMotorIdx));
+            Serial.print(F(",pwm:"));
+            Serial.print(testMotorPWM);
+            Serial.print(F(",FL:"));
+            Serial.print(snap.ticks[MOTOR_FL]);
+            Serial.print(F(",FR:"));
+            Serial.print(snap.ticks[MOTOR_FR]);
+            Serial.print(F(",RL:"));
+            Serial.print(snap.ticks[MOTOR_RL]);
+            Serial.print(F(",RR:"));
+            Serial.println(snap.ticks[MOTOR_RR]);
+        }
+    }
+
+    void handleCalibrating() {
+        // Calibration state machine is driven by onTick() at 50Hz.
+        // Here we just check if it finished or timed out.
+        if (!Motion::isCalibrating()) {
+            Motor::startBrake(BRAKE_HOLD_MS);
+            Serial_Cmd::sendDone();
+            setState(State::IDLE);
+            return;
+        }
+        // Safety timeout (3 sessions × (settle+measure+brake) + margin)
+        if (millis() - stateStartTime > 30000UL) {
+            Motion::abortCalibration();
+            Serial_Cmd::sendError("Calib timeout");
+            setState(State::IDLE);
+        }
+    }
+
     void handleError() {
         Motor::coastAll();
-        if (millis() - stateStartTime > 5000) {
+        if (millis() - stateStartTime > ERROR_RECOVERY_MS) {
             setState(State::IDLE);
         }
     }
@@ -363,14 +504,30 @@ void init() {
     Serial.println(F("Motion init..."));
     Motion::init();
 
-    // Try PS2 (non-blocking, optional)
+    // Load per-motor calibration from EEPROM
+    if (Motion::loadCalibFromEEPROM()) {
+        const uint8_t* cal = Motion::getCalMaxTickrate();
+        Serial.print(F("CALIB,loaded,FL:"));
+        Serial.print(cal[MOTOR_FL]);
+        Serial.print(F(",RL:"));
+        Serial.print(cal[MOTOR_RL]);
+        Serial.print(F(",RR:"));
+        Serial.print(cal[MOTOR_RR]);
+        Serial.print(F(",FR:"));
+        Serial.println(cal[MOTOR_FR]);
+    } else {
+        Serial.println(F("No calibration in EEPROM, using defaults"));
+    }
+
+#ifdef ENABLE_PS2
     Serial.println(F("PS2 init..."));
     ps2Init();
+#endif
 
     currentState = State::IDLE;
     stateStartTime = millis();
-    lastCommandTime = millis();  // Initialize watchdog
-    ps2Active = false;
+    lastCommandTime = millis();
+    velocityActive = false;
 
     Serial.println(F("Init complete"));
     Serial_Cmd::sendReady();
@@ -378,15 +535,35 @@ void init() {
 }
 
 void update() {
-    // Update PS2
+    // Service non-blocking brake timer
+    Motor::updateBrake();
+
+    // Periodic I2C health check
+    if (millis() - lastHealthCheck >= I2C_HEALTH_CHECK_MS) {
+        lastHealthCheck = millis();
+        if (Motor::checkHealth()) {
+            consecutiveI2CErrors = 0;
+        } else {
+            consecutiveI2CErrors++;
+            if (consecutiveI2CErrors >= I2C_ERROR_THRESHOLD) {
+                Motor::coastAll();
+                Motion::clearTarget();
+                Serial_Cmd::sendError("I2C fault");
+                setState(State::ERROR);
+                consecutiveI2CErrors = 0;
+            }
+        }
+    }
+
+#ifdef ENABLE_PS2
     ps2Update();
 
-    // Try reconnect if disconnected
     static uint32_t lastReconnect = 0;
     if (!ps2Connected && (millis() - lastReconnect > PS2_RECONNECT_MS)) {
         lastReconnect = millis();
         ps2Init();
     }
+#endif
 
     // Process serial commands
     Serial_Cmd::update();
@@ -406,7 +583,10 @@ void update() {
             handleMoving();
             break;
         case State::CALIBRATING:
-            // Calibration is blocking, handled in command
+            handleCalibrating();
+            break;
+        case State::TESTING:
+            handleTesting();
             break;
         case State::ERROR:
             handleError();
@@ -415,7 +595,11 @@ void update() {
 }
 
 void onTick() {
-    Motion::update();
+    if (Motion::isCalibrating()) {
+        Motion::updateCalibration();
+    } else {
+        Motion::update();
+    }
 }
 
 State getState() {
@@ -429,7 +613,10 @@ const char* getStateName() {
 void emergencyStop() {
     Motor::emergencyStop();
     Motion::clearTarget();
+#ifdef ENABLE_PS2
     ps2Active = false;
+#endif
+    velocityActive = false;
     setState(State::IDLE);
 }
 
@@ -438,7 +625,11 @@ uint32_t stateTime() {
 }
 
 bool isPS2Active() {
+#ifdef ENABLE_PS2
     return ps2Active;
+#else
+    return false;
+#endif
 }
 
 } // namespace Robot

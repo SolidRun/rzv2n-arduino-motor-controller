@@ -8,11 +8,11 @@
  *   Brake:    IN1=HIGH, IN2=HIGH (both full on - shorts motor)
  *   Coast:    IN1=LOW, IN2=LOW  (both off - freewheel)
  *
- * PCA9685 channel mapping:
- *   Motor 1 (FL): CH8  (IN1), CH9  (IN2)
- *   Motor 2 (FR): CH10 (IN1), CH11 (IN2)
- *   Motor 3 (RL): CH15 (IN1), CH14 (IN2)
- *   Motor 4 (RR): CH13 (IN1), CH12 (IN2)
+ * PCA9685 channel mapping (physical motor -> PCA9685 channels):
+ *   Motor 1 (FL): CH8  (IN1), CH9  (IN2) -> MOTOR_FL = index 0
+ *   Motor 2:      CH10 (IN1), CH11 (IN2) -> MOTOR_FR = index 3
+ *   Motor 3:      CH15 (IN1), CH14 (IN2) -> MOTOR_RL = index 1
+ *   Motor 4:      CH13 (IN1), CH12 (IN2) -> MOTOR_RR = index 2
  */
 
 #include "motor.h"
@@ -25,24 +25,24 @@
 //==============================================================================
 
 namespace {
-    // PCA9685 channel for each motor [motor][IN1, IN2]
+    // PCA9685 channel for each motor [motor_index][IN1, IN2]
+    // Indexed by MOTOR_FL=0, MOTOR_RL=1, MOTOR_RR=2, MOTOR_FR=3
     const uint8_t MOTOR_CH[NUM_MOTORS][2] = {
-        {MOTOR1_IN1_PIN, MOTOR1_IN2_PIN},  // FL: CH8, CH9
-        {MOTOR2_IN1_PIN, MOTOR2_IN2_PIN},  // FR: CH10, CH11
-        {MOTOR3_IN1_PIN, MOTOR3_IN2_PIN},  // RL: CH15, CH14
-        {MOTOR4_IN1_PIN, MOTOR4_IN2_PIN}   // RR: CH13, CH12
+        {FL_IN1_CH, FL_IN2_CH},  // [0] MOTOR_FL
+        {RL_IN1_CH, RL_IN2_CH},  // [1] MOTOR_RL
+        {RR_IN1_CH, RR_IN2_CH},  // [2] MOTOR_RR
+        {FR_IN1_CH, FR_IN2_CH}   // [3] MOTOR_FR
     };
 
-    // Current state
+    // Current state (indexed by MOTOR_FL/RL/RR/FR)
     int16_t speeds[NUM_MOTORS] = {0, 0, 0, 0};
-    float gains[NUM_MOTORS] = {
-        DEFAULT_GAIN_FL,
-        DEFAULT_GAIN_FR,
-        DEFAULT_GAIN_RL,
-        DEFAULT_GAIN_RR
-    };
 
     bool ready = false;
+
+    // Non-blocking brake state
+    bool braking = false;
+    uint32_t brakeStart = 0;
+    uint16_t brakeDuration = 0;
 
     // PWM buffer for batch updates (channels 8-15)
     uint16_t pwmBuffer[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -99,9 +99,7 @@ namespace {
         uint8_t in1 = MOTOR_CH[motor][0];
         uint8_t in2 = MOTOR_CH[motor][1];
 
-        // Apply gain compensation
-        float compensated = (float)speed * gains[motor];
-        int16_t clamped = constrain((int16_t)compensated, -255, 255);
+        int16_t clamped = constrain(speed, (int16_t)-255, (int16_t)255);
 
         // Convert 0-255 to 0-4095 (12-bit PWM)
         uint16_t duty = ((uint16_t)abs(clamped)) << 4;  // * 16
@@ -161,8 +159,9 @@ namespace {
 namespace Motor {
 
 void init() {
-    // Initialize I2C
+    // Initialize I2C with timeout protection
     Wire.begin();
+    Wire.setWireTimeout(3000, true);  // 3ms timeout, reset bus on hang
 
     // Initialize PCA9685
     PCA9685::init(PCA9685_I2C_ADDR, PCA9685_PWM_FREQ);
@@ -183,6 +182,30 @@ void set(uint8_t motor, int16_t speed) {
         updateMotorBuffer(motor, speed);
         flushBuffer();
     }
+}
+
+void setDirect(uint8_t motor, int16_t speed) {
+    if (!ready || motor >= NUM_MOTORS) return;
+
+    uint8_t in1 = MOTOR_CH[motor][0];
+    uint8_t in2 = MOTOR_CH[motor][1];
+
+    int16_t clamped = constrain(speed, (int16_t)-255, (int16_t)255);
+    uint16_t duty = ((uint16_t)abs(clamped)) << 4;  // 0-255 -> 0-4080
+
+    if (clamped > 0) {
+        bufferOff(in2);
+        bufferPWM(in1, duty);
+    } else if (clamped < 0) {
+        bufferOff(in1);
+        bufferPWM(in2, duty);
+    } else {
+        bufferOff(in1);
+        bufferOff(in2);
+    }
+
+    speeds[motor] = speed;
+    flushBuffer();
 }
 
 void setAll(const int16_t newSpeeds[NUM_MOTORS]) {
@@ -243,33 +266,22 @@ void brakeAndRelease(uint16_t brakeMs) {
     coastAll();
 }
 
-void setGain(uint8_t motor, float gain) {
-    if (motor >= NUM_MOTORS) return;
-    gains[motor] = constrain(gain, 0.5f, 1.5f);
+void startBrake(uint16_t ms) {
+    brakeAll();
+    braking = true;
+    brakeStart = millis();
+    brakeDuration = ms;
 }
 
-float getGain(uint8_t motor) {
-    if (motor >= NUM_MOTORS) return 1.0f;
-    return gains[motor];
-}
-
-void setAllGains(const float newGains[NUM_MOTORS]) {
-    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-        gains[i] = constrain(newGains[i], 0.5f, 1.5f);
+void updateBrake() {
+    if (braking && (millis() - brakeStart >= brakeDuration)) {
+        coastAll();
+        braking = false;
     }
 }
 
-void getAllGains(float outGains[NUM_MOTORS]) {
-    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-        outGains[i] = gains[i];
-    }
-}
-
-void resetGains() {
-    gains[MOTOR_FL] = DEFAULT_GAIN_FL;
-    gains[MOTOR_FR] = DEFAULT_GAIN_FR;
-    gains[MOTOR_RL] = DEFAULT_GAIN_RL;
-    gains[MOTOR_RR] = DEFAULT_GAIN_RR;
+bool isBraking() {
+    return braking;
 }
 
 int16_t getSpeed(uint8_t motor) {
@@ -279,6 +291,14 @@ int16_t getSpeed(uint8_t motor) {
 
 bool isReady() {
     return ready;
+}
+
+bool checkHealth() {
+    return PCA9685::isHealthy();
+}
+
+uint16_t getI2CErrorCount() {
+    return PCA9685::getI2CErrors();
 }
 
 } // namespace Motor

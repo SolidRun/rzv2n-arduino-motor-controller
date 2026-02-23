@@ -109,30 +109,17 @@ MotorSpeeds computeSpeeds(Direction dir, int16_t speed) {
     return result;
 }
 
-void applySyncCorrection(int16_t speeds[NUM_MOTORS],
-                        const int32_t encoderTicks[NUM_MOTORS],
-                        float kp) {
-    if (kp == 0.0f) return;
-
-    // Calculate average absolute position
-    int32_t sum = 0;
-    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-        sum += abs(encoderTicks[i]);
+int16_t calcAccelRamp(int16_t baseSpeed, int32_t currentPos) {
+    if (currentPos >= ACCEL_RAMP_TICKS) {
+        return baseSpeed;  // Past ramp zone, full speed
     }
-    int32_t avg = sum / NUM_MOTORS;
-
-    // Apply proportional correction
-    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-        int32_t error = abs(encoderTicks[i]) - avg;
-        int16_t correction = (int16_t)(error * kp);
-
-        // Reduce speed if this motor is ahead
-        if (speeds[i] > 0) {
-            speeds[i] = constrain(speeds[i] - correction, 0, 255);
-        } else if (speeds[i] < 0) {
-            speeds[i] = constrain(speeds[i] + correction, -255, 0);
-        }
+    if (currentPos <= 0) {
+        return ACCEL_MIN_SPEED;  // At start
     }
+    // Linear ramp from ACCEL_MIN_SPEED to baseSpeed
+    int16_t rampSpeed = ACCEL_MIN_SPEED +
+        (int16_t)((int32_t)(baseSpeed - ACCEL_MIN_SPEED) * currentPos / ACCEL_RAMP_TICKS);
+    return constrain(rampSpeed, (int16_t)ACCEL_MIN_SPEED, baseSpeed);
 }
 
 int16_t calcSlowdown(int16_t baseSpeed, int32_t remainingTicks) {
@@ -152,6 +139,51 @@ int16_t calcSlowdown(int16_t baseSpeed, int32_t remainingTicks) {
     if (newSpeed < SLOWDOWN_MIN_SPEED) return SLOWDOWN_MIN_SPEED;
 
     return newSpeed;
+}
+
+void computeFromVelocity(int16_t vx, int16_t vy, int16_t wz,
+                         int16_t out[NUM_MOTORS]) {
+    // Standard mecanum inverse kinematics
+    // vx = forward, vy = left strafe, wz = counter-clockwise rotation
+    out[MOTOR_FL] = vx - vy - wz;
+    out[MOTOR_FR] = vx + vy + wz;
+    out[MOTOR_RL] = vx + vy - wz;
+    out[MOTOR_RR] = vx - vy + wz;
+
+    // Normalize: if any motor exceeds 255, scale all down proportionally
+    int16_t maxAbs = 0;
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+        int16_t a = abs(out[i]);
+        if (a > maxAbs) maxAbs = a;
+    }
+    if (maxAbs > 255) {
+        for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+            out[i] = (int16_t)((int32_t)out[i] * 255 / maxAbs);
+        }
+    }
+}
+
+void forwardKinematics(const int16_t wheelDelta[NUM_MOTORS],
+                       int16_t &vx_mm, int16_t &vy_mm, int16_t &wz_mrad) {
+    // Convert ticks/period to mm/s per wheel
+    // ODOM deltas span MOVING_TELEMETRY_MS (50ms), so rate = 1000/50 = 20Hz
+    // mm_per_tick_per_s = π * WHEEL_DIAMETER_MM / ENCODER_CPR * (1000 / MOVING_TELEMETRY_MS)
+    // = 3.14159 * 80 / 4320 * 20 ≈ 1.164 mm/s per tick/period
+    const float K = 3.14159f * WHEEL_DIAMETER_MM * (1000.0f / MOVING_TELEMETRY_MS) / (float)ENCODER_CPR;
+
+    float wFL = wheelDelta[MOTOR_FL] * K;
+    float wFR = wheelDelta[MOTOR_FR] * K;
+    float wRL = wheelDelta[MOTOR_RL] * K;
+    float wRR = wheelDelta[MOTOR_RR] * K;
+
+    // Forward kinematics (inverse of computeFromVelocity)
+    vx_mm  = (int16_t)((wFL + wFR + wRL + wRR) * 0.25f);
+    vy_mm  = (int16_t)((-wFL + wFR + wRL - wRR) * 0.25f);
+
+    // Angular velocity: wz = sum / (4 * (lx + ly)), lx+ly = (wheelbase + track) / 2
+    const float lxly = (WHEEL_BASE_MM + TRACK_WIDTH_MM) * 0.5f;
+    float wz = (-wFL + wFR - wRL + wRR) / (4.0f * lxly);  // rad/s
+    wz_mrad = (int16_t)(wz * 1000.0f);
 }
 
 } // namespace Mecanum

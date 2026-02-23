@@ -20,6 +20,9 @@
 // #define DEBUG_TIMING
 // #define DEBUG_MOTORS
 
+// Uncomment to include PS2 controller support (~3KB flash)
+// #define ENABLE_PS2
+
 //==============================================================================
 // Hardware: I2C Motor Shield (PCA9685)
 //==============================================================================
@@ -27,22 +30,34 @@
 #define PCA9685_I2C_ADDR        0x60
 #define PCA9685_PWM_FREQ        1600    // Hz for DC motors
 
-// PCA9685 motor pin mapping (TB67H450 H-bridge)
-// Each motor uses 2 pins: IN1 (forward PWM) and IN2 (backward PWM)
-#define MOTOR1_IN1_PIN          8       // FL Motor
-#define MOTOR1_IN2_PIN          9
-#define MOTOR2_IN1_PIN          10      // FR Motor
-#define MOTOR2_IN2_PIN          11
-#define MOTOR3_IN1_PIN          15      // RL Motor
-#define MOTOR3_IN2_PIN          14
-#define MOTOR4_IN1_PIN          13      // RR Motor
-#define MOTOR4_IN2_PIN          12
+// Per-wheel hardware mapping (PCA9685 channels + encoder port)
+// To fix a motor/encoder mismatch, change values HERE only.
+// TB67H450: IN1 = forward PWM, IN2 = backward PWM
+#define FL_IN1_CH               8
+#define FL_IN2_CH               9
+#define FL_ENC_PORT             1
+#define FL_ENC_DIR              1
+
+#define RL_IN1_CH               10
+#define RL_IN2_CH               11
+#define RL_ENC_PORT             2
+#define RL_ENC_DIR              1
+
+#define RR_IN1_CH               15
+#define RR_IN2_CH               14
+#define RR_ENC_PORT             3
+#define RR_ENC_DIR             -1
+
+#define FR_IN1_CH               13
+#define FR_IN2_CH               12
+#define FR_ENC_PORT             4
+#define FR_ENC_DIR             -1
 
 //==============================================================================
 // Hardware: Serial Communication
 //==============================================================================
 
-#define SERIAL_BAUD             9600
+#define SERIAL_BAUD             115200
 #define CMD_BUFFER_SIZE         32
 
 //==============================================================================
@@ -65,20 +80,17 @@
 #define NUM_MOTORS              4
 
 // Motor indices (wheel positions for Mecanum drive)
-#define MOTOR_FL                0       // Front-Left
-#define MOTOR_FR                3       // Front-Right
-#define MOTOR_RL                1       // Rear-Left
-#define MOTOR_RR                2       // Rear-Right
+// Non-sequential ordering matches physical wiring:
+//   Motor1=FL, Motor2=FR(idx3), Motor3=RL(idx1), Motor4=RR(idx2)
+// All arrays (MOTOR_CH, speeds, encoders) use this indexing.
+#define MOTOR_FL                0       // Front-Left  -> Motor1
+#define MOTOR_RL                1       // Rear-Left   -> Motor3
+#define MOTOR_RR                2       // Rear-Right  -> Motor4
+#define MOTOR_FR                3       // Front-Right -> Motor2
 
 // Speed limits
 #define SPEED_MIN               20
 #define SPEED_MAX               255
-
-// Default motor gains (for calibration compensation)
-#define DEFAULT_GAIN_FL         1.00f
-#define DEFAULT_GAIN_FR         1.00f
-#define DEFAULT_GAIN_RL         1.00f
-#define DEFAULT_GAIN_RR         1.00f
 
 //==============================================================================
 // Encoder Configuration
@@ -86,6 +98,13 @@
 
 #define NUM_ENCODERS            4
 #define ENCODER_CPR             4320    // Counts per revolution
+#define WHEEL_DIAMETER_MM       80      // Mecanum wheel diameter in mm
+// Wheel circumference = π × 80mm = 251.3mm
+// 1 tick = 0.058mm, 1mm ≈ 17.19 ticks, 1cm ≈ 171.9 ticks
+
+// Robot geometry (for mecanum forward kinematics / odometry)
+#define WHEEL_BASE_MM           190     // Front-to-rear axle distance
+#define TRACK_WIDTH_MM          210     // Left-to-right wheel distance
 
 //==============================================================================
 // Control Loop
@@ -103,18 +122,41 @@
 // Motion Control
 //==============================================================================
 
-// Deceleration ramp
+// Acceleration ramp (prevents wheel slip on startup)
+#define ACCEL_RAMP_TICKS        300     // Ramp up over first N encoder ticks
+#define ACCEL_MIN_SPEED         40      // Starting speed for ramp
+
+// Deceleration ramp (smooth stopping near target)
 #define SLOWDOWN_TICKS          400     // Start slowing before target
 #define SLOWDOWN_KP             0.05f
 #define SLOWDOWN_MIN_SPEED      60
 
-// Motor synchronization PID (set to 0 to disable)
-#define SYNC_KP                 0.0f
-#define SYNC_KI                 0.0f
-#define SYNC_KD                 0.0f
+// Per-motor velocity PID (closed-loop speed control using encoder feedback)
+// Each motor has its own PI controller: PWM = feedforward + Kp*error + Ki*integral
+// Feed-forward estimates PWM from desired tick rate, PI corrects for load/friction.
+#define VEL_PID_KP              1.5f    // Proportional gain (PWM per tick/period error)
+#define VEL_PID_KI              0.3f    // Integral gain (corrects steady-state error)
+#define VEL_PID_IMAX            150.0f  // Anti-windup: max integral accumulation
+
+// Maximum encoder ticks per control period (20ms) at full PWM (255), no load.
+// Motor: 9600 RPM shaft, 90:1 gear → 106.7 RPM output
+// 106.7/60 * 4320 CPR = 7680 ticks/s → 7680/50Hz = ~154 ticks/period
+#define MAX_MOTOR_TICKRATE      150
 
 // Brake timing
 #define BRAKE_HOLD_MS           40
+
+// Motor calibration (per-motor speed profiling)
+// Measures each motor's actual max tick rate for accurate PID feed-forward.
+#define CALIB_PWM               200     // Reference PWM for measurement
+#define CALIB_SETTLE_MS         500     // Wait for motor to reach steady state
+#define CALIB_MEASURE_MS        2000    // Measurement window per session
+#define CALIB_SESSIONS          3       // Number of measurement sessions (averaged)
+#define CALIB_BRAKE_MS          300     // Brake between sessions
+
+// EEPROM layout for calibration data
+#define EEPROM_CALIB_ADDR       0       // Start address
+#define EEPROM_CALIB_MARKER     0xCB    // Validity marker byte
 
 // Timeouts
 #define MOVE_TIMEOUT_MS         30000   // Max time for any movement
@@ -123,18 +165,25 @@
 #define STALL_MIN_PROGRESS      50     // Minimum ticks needed to reset stall timer
 
 #define MIN_WORK_SPEED 80       
-#define SHORT_MOVE_TICKS 1000  
+#define SHORT_MOVE_TICKS 250
 #define SHORT_REMAIN_TICKS 600
+
 //==============================================================================
-// Calibration
+// Telemetry & State Machine
 //==============================================================================
 
-#define CAL_SPEED               120
-#define CAL_TICKS               3000
-#define CAL_SESSIONS            6
-#define CAL_SETTLE_MS           150
-#define CAL_POST_MS             1000
-#define CAL_TIMEOUT_MS          5000    // Timeout per calibration session
+#define IDLE_TELEMETRY_MS       1000    // Encoder print rate in IDLE state (1Hz)
+#define MOVING_TELEMETRY_MS     50      // Encoder print rate while MOVING (20Hz)
+#define MOVING_DEBUG_MS         1000    // Motion debug output rate
+#define ERROR_RECOVERY_MS       5000    // Auto-recovery time in ERROR state
+#define PS2_DISCONNECT_MS       1000    // PS2 disconnect detection threshold
+
+//==============================================================================
+// I2C Health Monitoring
+//==============================================================================
+
+#define I2C_HEALTH_CHECK_MS     2000    // Check I2C health every 2 seconds
+#define I2C_ERROR_THRESHOLD     5       // Enter ERROR state after N consecutive errors
 
 //==============================================================================
 // PS2 Speed Presets
@@ -151,11 +200,9 @@
 #ifdef DEBUG_ENABLED
     #define DBG_PRINT(x)        Serial.print(x)
     #define DBG_PRINTLN(x)      Serial.println(x)
-    #define DBG_PRINTF(...)     Serial.printf(__VA_ARGS__)
 #else
     #define DBG_PRINT(x)
     #define DBG_PRINTLN(x)
-    #define DBG_PRINTF(...)
 #endif
 
 #endif // CORE_CONFIG_H

@@ -6,13 +6,15 @@
  * Protocol: CMD,param1,param2\n
  *
  * Commands:
- *   STOP        - Emergency stop
- *   READ        - Read encoder values
- *   SYNC        - Run calibration
- *   FWDS        - Smart forward (default distance)
- *   FWD,s,t     - Forward: speed s, ticks t
- *   BWD,s,t     - Backward: speed s, ticks t
- *   TURN,s,t    - Turn: speed s, ticks t (positive=left, negative=right)
+ *   STOP           - Emergency stop
+ *   READ           - Read encoder values
+ *   FWD,s,t        - Forward: speed s, ticks t
+ *   BWD,s,t        - Backward: speed s, ticks t
+ *   TURN,s,t       - Turn: speed s, ticks t (positive=left, negative=right)
+ *   VEL,vx,vy,wz   - Continuous velocity: forward, strafe, rotation (-255..255)
+ *   CALIB           - Calibrate motors: per-motor speed profiling, saves to EEPROM
+ *   TMOTOR,idx,pwm  - Test single motor: index (0-3 or FL/FR/RL/RR), PWM (-255..255)
+ *   TENC            - Test encoders: stream readings, spin wheels manually
  */
 
 #ifndef APP_SERIAL_CMD_H
@@ -59,11 +61,6 @@ void sendError(const char* msg = nullptr);
  * @brief Send encoder values
  */
 void sendEncoders(const int32_t values[NUM_ENCODERS]);
-
-/**
- * @brief Send motor gains
- */
-void sendGains(const float gains[NUM_MOTORS]);
 
 /**
  * @brief Send generic message

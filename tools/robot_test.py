@@ -1,994 +1,694 @@
 #!/usr/bin/env python3
 """
-Robot Test Utility for Mecanum 4WD Controller
-GUI version - Works on Linux and Windows with auto port detection and Bluetooth support
+Mecanum Robot Controller - Serial Test GUI
+Direct USB serial interface for controlling and testing the robot.
 """
 
+import re
 import serial
 import serial.tools.list_ports
-import subprocess
 import time
 import threading
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from typing import Optional, Callable
-from queue import Queue
-
-# Bluetooth imports - pybluez for Linux/Windows
-try:
-    import bluetooth
-    BLUETOOTH_AVAILABLE = True
-except ImportError:
-    BLUETOOTH_AVAILABLE = False
-    print("Warning: Bluetooth library not installed. Bluetooth features disabled.")
-    print("Run setup.py to install dependencies, or install manually:")
-    print("  pip install pybluez-updated  # For Linux with Python 3.12+")
 
 
-class RobotController:
-    """Handles communication with the robot via Serial or Bluetooth"""
+# =============================================================================
+# Serial Connection
+# =============================================================================
+
+class SerialConnection:
+    """Thread-safe serial connection to Arduino."""
 
     def __init__(self):
-        self.serial: Optional[serial.Serial] = None
-        self.bt_socket = None
+        self.port: Optional[serial.Serial] = None
         self.connected = False
-        self.connection_type = None  # 'serial' or 'bluetooth'
-        self.connection_info = None  # Store port/address for reconnect
-        self.read_thread: Optional[threading.Thread] = None
         self.running = False
-        self.on_data_callback: Optional[Callable[[str], None]] = None
-        self.on_disconnect_callback: Optional[Callable[[str], None]] = None
-        self.last_error = None
-
-        # Response tracking
-        self.last_send_time = 0
-        self.last_rx_time = time.time()
+        self._thread: Optional[threading.Thread] = None
+        self.on_data: Optional[Callable[[str], None]] = None
+        self.on_disconnect: Optional[Callable[[str], None]] = None
 
     @staticmethod
     def list_ports() -> list:
-        """List all available serial ports"""
-        ports = []
-        for port in serial.tools.list_ports.comports():
-            ports.append({
-                'device': port.device,
-                'description': port.description,
-                'vid': port.vid,
-                'pid': port.pid
-            })
-        return ports
+        """List all serial ports as (device, description) tuples."""
+        return [(p.device, p.description) for p in serial.tools.list_ports.comports()]
 
     @staticmethod
-    def detect_arduino() -> list:
-        """Auto-detect Arduino ports"""
-        arduino_ports = []
-        for port in serial.tools.list_ports.comports():
-            desc_lower = port.description.lower()
-            is_arduino = False
+    def detect_arduino() -> Optional[str]:
+        """Auto-detect first Arduino port. Returns device path or None."""
+        keywords = ['arduino', 'ch340', 'cp210', 'ftdi', 'usb serial', 'usb-serial']
+        vids = {0x2341, 0x1A86, 0x0403, 0x10C4}  # Arduino, CH340, FTDI, CP210x
+        for p in serial.tools.list_ports.comports():
+            if any(k in p.description.lower() for k in keywords) or p.vid in vids:
+                return p.device
+        return None
 
-            # Check description
-            if any(k in desc_lower for k in ['arduino', 'ch340', 'cp210', 'ftdi', 'usb serial', 'usb-serial']):
-                is_arduino = True
-            # Check VID
-            elif port.vid in [0x2341, 0x1A86, 0x0403, 0x10C4]:  # Arduino, CH340, FTDI, CP210x
-                is_arduino = True
-
-            if is_arduino:
-                arduino_ports.append(port.device)
-
-        return arduino_ports
-
-    @staticmethod
-    def scan_bluetooth_devices() -> list:
-        """Scan for nearby Bluetooth devices"""
-        if not BLUETOOTH_AVAILABLE:
-            return []
-
+    def connect(self, device: str, baud: int = 115200) -> tuple:
+        """Connect to serial port. Returns (success, message)."""
         try:
-            devices = bluetooth.discover_devices(duration=8, lookup_names=True, flush_cache=True, lookup_class=False)
-            return [{'address': addr, 'name': name} for addr, name in devices]
-        except Exception as e:
-            print(f"Bluetooth scan error: {e}")
-            return []
-
-    def connect(self, port: str, baudrate: int = 9600) -> tuple:
-        """Connect to Arduino via Serial. Returns (success, message)"""
-        try:
-            self.serial = serial.Serial(
-                port=port,
-                baudrate=baudrate,
-                timeout=0.1
-            )
+            self.port = serial.Serial(port=device, baudrate=baud, timeout=0.1)
             self.connected = True
-            self.connection_type = 'serial'
-            self.connection_info = {'port': port, 'baudrate': baudrate}
             self.running = True
-            self.last_rx_time = time.time()
-
-            # Start reader thread
-            self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
-            self.read_thread.start()
-
-            return True, f"Connected to {port}"
+            self._thread = threading.Thread(target=self._read_loop, daemon=True)
+            self._thread.start()
+            return True, f"Connected to {device} @ {baud}"
         except serial.SerialException as e:
             return False, str(e)
 
-    @staticmethod
-    def check_bt_status(address: str) -> dict:
-        """Check Bluetooth device status using bluetoothctl. Returns dict with paired/connected/trusted."""
-        info = {'paired': False, 'connected': False, 'trusted': False}
-        try:
-            result = subprocess.run(
-                ['bluetoothctl', 'info', address],
-                capture_output=True, text=True, timeout=5
-            )
-            output = result.stdout
-            info['paired'] = 'Paired: yes' in output
-            info['connected'] = 'Connected: yes' in output
-            info['trusted'] = 'Trusted: yes' in output
-        except Exception:
-            pass
-        return info
-
-    def connect_bluetooth(self, bt_address: str) -> tuple:
-        """Connect to Arduino via Bluetooth. Returns (success, message)"""
-        if not BLUETOOTH_AVAILABLE:
-            return False, "Bluetooth library not available"
-
-        try:
-            # Check if device is already connected elsewhere
-            bt_info = self.check_bt_status(bt_address)
-            if bt_info['connected']:
-                print(f"[BT_CONNECT] Device already connected, will try to connect anyway...")
-
-            print(f"[BT_CONNECT] Attempting to connect to {bt_address} on channel 1...")
-            print(f"[BT_CONNECT] Device status - Paired: {bt_info['paired']}, Connected: {bt_info['connected']}")
-
-            # Create Bluetooth socket
-            self.bt_socket = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
-            print(f"[BT_CONNECT] Socket created")
-
-            # Set socket timeout for connect
-            self.bt_socket.settimeout(10.0)
-
-            # Connect to device on channel 1 (standard SPP channel)
-            print(f"[BT_CONNECT] Connecting to ({bt_address}, 1)...")
-            self.bt_socket.connect((bt_address, 1))
-            print(f"[BT_CONNECT] Connected successfully!")
-
-            # Set shorter timeout for reads
-            self.bt_socket.settimeout(0.1)
-
-            self.connected = True
-            self.connection_type = 'bluetooth'
-            self.connection_info = {'address': bt_address}
-            self.running = True
-            self.last_rx_time = time.time()
-
-            # Start reader thread
-            self.read_thread = threading.Thread(target=self._read_loop, daemon=True)
-            self.read_thread.start()
-            print(f"[BT_CONNECT] Reader thread started")
-
-            return True, f"Connected to Bluetooth device {bt_address}"
-        except bluetooth.BluetoothError as e:
-            print(f"[BT_CONNECT] Bluetooth error: {e}")
-            self._cleanup_bt_socket()
-            return False, f"Bluetooth connection error: {str(e)}"
-        except Exception as e:
-            print(f"[BT_CONNECT] Unexpected error: {e}")
-            self._cleanup_bt_socket()
-            return False, str(e)
-
-    def _cleanup_bt_socket(self):
-        """Clean up Bluetooth socket on error"""
-        if self.bt_socket:
-            try:
-                self.bt_socket.close()
-            except Exception:
-                pass
-            self.bt_socket = None
-
     def disconnect(self):
-        """Disconnect from Arduino (Serial or Bluetooth)"""
+        """Disconnect and clean up."""
         self.running = False
         self.connected = False
-
-        if self.read_thread:
-            self.read_thread.join(timeout=1)
-
-        # Close serial connection
-        if self.serial:
+        if self._thread:
+            self._thread.join(timeout=1)
+            self._thread = None
+        if self.port:
             try:
-                if self.serial.is_open:
-                    self.serial.close()
+                self.port.close()
             except Exception:
                 pass
-            self.serial = None
-
-        # Close Bluetooth connection
-        self._cleanup_bt_socket()
-
-        self.connection_type = None
-
-    def _read_loop(self):
-        """Background thread to read data from Serial or Bluetooth"""
-        buffer = ""
-        consecutive_errors = 0
-
-        while self.running:
-            try:
-                if self.connection_type == 'serial' and self.serial:
-                    if not self.serial.is_open:
-                        self.last_error = "Serial port closed"
-                        self._handle_connection_lost()
-                        break
-                    if self.serial.in_waiting:
-                        line = self.serial.readline().decode('utf-8', errors='ignore').strip()
-                        if line:
-                            self.last_rx_time = time.time()
-                            if self.on_data_callback:
-                                self.on_data_callback(line)
-                        consecutive_errors = 0
-
-                elif self.connection_type == 'bluetooth' and self.bt_socket:
-                    try:
-                        data = self.bt_socket.recv(256).decode('utf-8', errors='ignore')
-                        if data:
-                            buffer += data
-                            consecutive_errors = 0
-                            self.last_rx_time = time.time()
-                            # Process complete lines
-                            while '\n' in buffer:
-                                line, buffer = buffer.split('\n', 1)
-                                line = line.strip()
-                                if line and self.on_data_callback:
-                                    self.on_data_callback(line)
-                    except bluetooth.BluetoothError as e:
-                        err_str = str(e).lower()
-                        # Check for real connection errors (not just timeout)
-                        if any(x in err_str for x in ['connection reset', 'broken pipe', 'not connected', 'transport endpoint']):
-                            self.last_error = f"Bluetooth disconnected: {e}"
-                            self._handle_connection_lost()
-                            break
-                        # Timeout is normal, ignore
-                    except OSError as e:
-                        # Socket errors indicate lost connection
-                        if e.errno in [104, 107, 32]:  # Connection reset, not connected, broken pipe
-                            self.last_error = f"Connection lost: {e}"
-                            self._handle_connection_lost()
-                            break
-
-            except serial.SerialException as e:
-                self.last_error = f"Serial error: {e}"
-                self._handle_connection_lost()
-                break
-            except Exception as e:
-                consecutive_errors += 1
-                if consecutive_errors > 10:
-                    self.last_error = f"Too many errors: {e}"
-                    self._handle_connection_lost()
-                    break
-
-            time.sleep(0.02)  # 50Hz polling
-
-    def _handle_connection_lost(self):
-        """Handle unexpected connection loss"""
-        self.running = False
-        self.connected = False
-
-        # Close sockets/ports
-        if self.serial:
-            try:
-                self.serial.close()
-            except Exception:
-                pass
-            self.serial = None
-
-        self._cleanup_bt_socket()
-        self.connection_type = None
-
-        # Notify GUI
-        if self.on_disconnect_callback:
-            self.on_disconnect_callback(self.last_error)
+            self.port = None
 
     def send(self, cmd: str) -> bool:
-        """Send command to Arduino (Serial or Bluetooth)"""
-        if not self.connected:
-            print(f"[SEND] Not connected, cannot send: {cmd}")
+        """Send command string (appends newline). Returns success."""
+        if not self.connected or not self.port:
             return False
-
         try:
-            message = f"{cmd}\n".encode()
-
-            if self.connection_type == 'serial' and self.serial:
-                print(f"[SERIAL_TX] Sending: {cmd}")
-                self.serial.write(message)
-                self.serial.flush()  # Ensure data is sent
-                self.last_send_time = time.time()
-                return True
-            elif self.connection_type == 'bluetooth' and self.bt_socket:
-                print(f"[BT_TX] Sending via Bluetooth: {cmd} (bytes: {len(message)})")
-                self.bt_socket.send(message)
-                print(f"[BT_TX] Send successful")
-                self.last_send_time = time.time()
-                return True
-            else:
-                print(f"[SEND] No active connection (type={self.connection_type})")
-                return False
-        except Exception as e:
-            print(f"[SEND] Error sending command: {e}")
-            self.last_error = str(e)
+            self.port.write(f"{cmd}\n".encode())
+            self.port.flush()
+            return True
+        except Exception:
             return False
 
+    def _read_loop(self):
+        """Background reader thread."""
+        errors = 0
+        while self.running:
+            try:
+                if self.port and self.port.is_open and self.port.in_waiting:
+                    line = self.port.readline().decode('utf-8', errors='ignore').strip()
+                    if line and self.on_data:
+                        self.on_data(line)
+                    errors = 0
+                else:
+                    time.sleep(0.02)
+            except serial.SerialException as e:
+                self._lost(f"Serial error: {e}")
+                break
+            except Exception:
+                errors += 1
+                if errors > 10:
+                    self._lost("Too many read errors")
+                    break
+                time.sleep(0.05)
+
+    def _lost(self, reason: str):
+        """Handle unexpected disconnect."""
+        self.running = False
+        self.connected = False
+        if self.port:
+            try:
+                self.port.close()
+            except Exception:
+                pass
+            self.port = None
+        if self.on_disconnect:
+            self.on_disconnect(reason)
+
+
+# =============================================================================
+# Telemetry line patterns
+# =============================================================================
+
+# ENC,FL:123,FR:456,RL:789,RR:012
+_ENC_RE = re.compile(r'ENC,FL:(-?\d+),FR:(-?\d+),RL:(-?\d+),RR:(-?\d+)')
+# ODOM,vx,vy,wz
+_ODOM_RE = re.compile(r'ODOM,(-?\d+),(-?\d+),(-?\d+)')
+# TEST,FL,pwm:200,FL:123,FR:456,RL:789,RR:012
+_TEST_RE = re.compile(r'TEST,\w+,pwm:-?\d+,FL:(-?\d+),FR:(-?\d+),RL:(-?\d+),RR:(-?\d+)')
+
+# Lines that are high-frequency telemetry (filterable)
+_CALIB_RE = re.compile(r'CALIB,(\w+)')
+_TELEMETRY_PREFIXES = ('ENC,', 'ODOM,', 'TEST,', 'Moving:')
+
+
+# =============================================================================
+# GUI Application
+# =============================================================================
 
 class RobotGUI:
-    """Main GUI application for controlling the robot"""
-
-    # Default Bluetooth address for quick connection
-    DEFAULT_BT_ADDRESS = "EC:5C:84:11:EC:97"
-    DEFAULT_BT_NAME = "Arduino_BT_Bridge"
+    """Professional serial GUI for Mecanum robot controller."""
 
     def __init__(self):
-        self.robot = RobotController()
-        self.robot.on_data_callback = self.on_serial_data
-        self.robot.on_disconnect_callback = self.on_connection_lost
-        self.bt_devices = []
+        self.serial = SerialConnection()
+        self.serial.on_data = self._on_rx
+        self.serial.on_disconnect = self._on_disconnect
 
-        # Command state tracking
-        self.waiting_for_response = False
-        self.last_command = None
-        self.command_start_time = 0
+        # VEL mode state
+        self._vel_timer_id = None
+        self._vel_active = False
 
-        # Create main window
+        # Main window
         self.root = tk.Tk()
         self.root.title("Mecanum Robot Controller")
-        self.root.geometry("800x700")
+        self.root.geometry("850x820")
         self.root.resizable(True, True)
+        self.root.minsize(700, 650)
 
-        # Configure style
-        self._configure_style()
-        self._create_widgets()
+        self._setup_style()
+        self._build_ui()
         self._bind_keys()
 
-        # Start with Bluetooth mode if available, otherwise Serial
-        if BLUETOOTH_AVAILABLE:
-            self.conn_type_var.set("bluetooth")
-            self.on_connection_type_changed()
-            # Pre-populate with default Bluetooth address
-            self.bt_devices = [{'address': self.DEFAULT_BT_ADDRESS, 'name': self.DEFAULT_BT_NAME}]
-            self.bt_combo['values'] = [f"{self.DEFAULT_BT_NAME} ({self.DEFAULT_BT_ADDRESS})"]
-            self.bt_var.set(f"{self.DEFAULT_BT_NAME} ({self.DEFAULT_BT_ADDRESS})")
-        else:
-            self.conn_type_var.set("serial")
-            self.on_connection_type_changed()
-            self.refresh_ports()
+        # Auto-detect Arduino port on startup
+        self._refresh_ports()
 
-        # Start periodic UI update
-        self._update_status()
+    # ----- Style -----
 
-    def _configure_style(self):
-        """Configure ttk styles for better appearance"""
+    def _setup_style(self):
         style = ttk.Style()
-
-        # Try to use a modern theme
-        available_themes = style.theme_names()
         for theme in ['clam', 'alt', 'default']:
-            if theme in available_themes:
+            if theme in style.theme_names():
                 style.theme_use(theme)
                 break
+        style.configure('Green.TLabel', foreground='#009933', font=('Arial', 10, 'bold'))
+        style.configure('Red.TLabel', foreground='#cc0000', font=('Arial', 10, 'bold'))
+        style.configure('Gray.TLabel', foreground='#888888', font=('Arial', 10))
+        style.configure('Yellow.TLabel', foreground='#cc8800', font=('Arial', 10, 'bold'))
+        style.configure('Mono.TLabel', font=('Consolas', 10))
+        style.configure('MonoBold.TLabel', font=('Consolas', 10, 'bold'))
 
-        # Configure custom styles
-        style.configure('Connected.TLabel', foreground='green', font=('Arial', 10, 'bold'))
-        style.configure('Disconnected.TLabel', foreground='red', font=('Arial', 10, 'bold'))
-        style.configure('Warning.TLabel', foreground='orange', font=('Arial', 10, 'bold'))
-        style.configure('BTStatus.TLabel', foreground='#0066cc', font=('Arial', 9))
-        style.configure('Message.TLabel', font=('Arial', 11, 'bold'))
+    # ----- UI Construction -----
 
-    def _create_widgets(self):
-        """Create all GUI widgets"""
-        # Main container with padding
-        main_frame = ttk.Frame(self.root, padding=5)
-        main_frame.pack(fill='both', expand=True)
+    def _build_ui(self):
+        main = ttk.Frame(self.root, padding=6)
+        main.pack(fill='both', expand=True)
 
-        # === Connection Frame ===
-        conn_frame = ttk.LabelFrame(main_frame, text="Connection", padding=10)
-        conn_frame.pack(fill='x', pady=(0, 5))
+        self._build_connection(main)
+        self._build_controls(main)
+        self._build_velocity(main)
+        self._build_diagnostics(main)
+        self._build_telemetry(main)
+        self._build_monitor(main)
+        self._build_statusbar(main)
 
-        # Connection type selection
-        self.conn_type_var = tk.StringVar(value="bluetooth" if BLUETOOTH_AVAILABLE else "serial")
+    def _build_connection(self, parent):
+        frame = ttk.LabelFrame(parent, text="Connection", padding=8)
+        frame.pack(fill='x', pady=(0, 4))
 
-        type_frame = ttk.Frame(conn_frame)
-        type_frame.pack(fill='x', pady=(0, 5))
+        row = ttk.Frame(frame)
+        row.pack(fill='x')
 
-        ttk.Radiobutton(type_frame, text="Bluetooth", variable=self.conn_type_var,
-                        value="bluetooth", command=self.on_connection_type_changed,
-                        state='normal' if BLUETOOTH_AVAILABLE else 'disabled').pack(side='left', padx=5)
-        ttk.Radiobutton(type_frame, text="Serial/USB", variable=self.conn_type_var,
-                        value="serial", command=self.on_connection_type_changed).pack(side='left', padx=5)
-
-        # Bluetooth connection widgets
-        self.bt_frame = ttk.Frame(conn_frame)
-
-        ttk.Label(self.bt_frame, text="Device:").pack(side='left', padx=(0, 5))
-
-        self.bt_var = tk.StringVar()
-        self.bt_combo = ttk.Combobox(self.bt_frame, textvariable=self.bt_var, width=45)
-        self.bt_combo.pack(side='left', padx=5, fill='x', expand=True)
-
-        self.bt_scan_btn = ttk.Button(self.bt_frame, text="Scan", command=self.scan_bluetooth, width=8)
-        self.bt_scan_btn.pack(side='left', padx=2)
-
-        self.bt_check_btn = ttk.Button(self.bt_frame, text="Check", command=self.check_bt_status, width=8)
-        self.bt_check_btn.pack(side='left', padx=2)
-
-        # Bluetooth status row
-        self.bt_status_frame = ttk.Frame(conn_frame)
-        self.bt_status_label = ttk.Label(self.bt_status_frame, text="BT: Not checked", style='BTStatus.TLabel')
-        self.bt_status_label.pack(side='left', padx=5)
-
-        # Serial connection widgets
-        self.serial_frame = ttk.Frame(conn_frame)
-
-        ttk.Label(self.serial_frame, text="Port:").pack(side='left', padx=(0, 5))
-
+        ttk.Label(row, text="Port:").pack(side='left')
         self.port_var = tk.StringVar()
-        self.port_combo = ttk.Combobox(self.serial_frame, textvariable=self.port_var, width=30)
-        self.port_combo.pack(side='left', padx=5)
+        self.port_combo = ttk.Combobox(row, textvariable=self.port_var, width=25, state='readonly')
+        self.port_combo.pack(side='left', padx=(4, 8))
 
-        ttk.Button(self.serial_frame, text="Refresh", command=self.refresh_ports, width=8).pack(side='left', padx=2)
+        ttk.Button(row, text="Refresh", command=self._refresh_ports, width=8).pack(side='left', padx=2)
 
-        # Connection controls
-        control_frame = ttk.Frame(conn_frame)
-        control_frame.pack(fill='x', pady=(10, 0))
+        self.connect_btn = ttk.Button(row, text="Connect", command=self._toggle_connect, width=10)
+        self.connect_btn.pack(side='left', padx=(8, 0))
 
-        self.connect_btn = ttk.Button(control_frame, text="Connect", command=self.toggle_connection, width=12)
-        self.connect_btn.pack(side='left', padx=5)
+        self.status_label = ttk.Label(row, text="  Disconnected", style='Red.TLabel')
+        self.status_label.pack(side='left', padx=(12, 0))
 
-        self.status_label = ttk.Label(control_frame, text="Disconnected", style='Disconnected.TLabel')
-        self.status_label.pack(side='left', padx=10)
+        self.state_label = ttk.Label(row, text="", style='Gray.TLabel')
+        self.state_label.pack(side='left', padx=(16, 0))
 
-        # Response indicator
-        self.response_label = ttk.Label(control_frame, text="", foreground='gray')
-        self.response_label.pack(side='right', padx=10)
-
-        # === Movement Controls Frame ===
-        ctrl_frame = ttk.LabelFrame(main_frame, text="Movement Controls", padding=10)
-        ctrl_frame.pack(fill='x', pady=5)
+    def _build_controls(self, parent):
+        frame = ttk.LabelFrame(parent, text="Position Control", padding=8)
+        frame.pack(fill='x', pady=4)
 
         # Parameters row
-        param_frame = ttk.Frame(ctrl_frame)
-        param_frame.pack(fill='x', pady=(0, 10))
+        params = ttk.Frame(frame)
+        params.pack(fill='x', pady=(0, 6))
 
-        ttk.Label(param_frame, text="Speed:").pack(side='left', padx=(0, 5))
+        ttk.Label(params, text="Speed:").pack(side='left')
         self.speed_var = tk.IntVar(value=100)
-        self.speed_spin = ttk.Spinbox(param_frame, from_=20, to=255, textvariable=self.speed_var, width=5)
-        self.speed_spin.pack(side='left', padx=(0, 10))
+        ttk.Spinbox(params, from_=20, to=255, textvariable=self.speed_var, width=5).pack(side='left', padx=(2, 12))
 
-        ttk.Label(param_frame, text="Distance:").pack(side='left', padx=(0, 5))
+        ttk.Label(params, text="Ticks:").pack(side='left')
         self.ticks_var = tk.IntVar(value=1000)
-        self.ticks_spin = ttk.Spinbox(param_frame, from_=100, to=10000, increment=100, textvariable=self.ticks_var, width=7)
-        self.ticks_spin.pack(side='left', padx=(0, 10))
+        ttk.Spinbox(params, from_=50, to=50000, increment=100, textvariable=self.ticks_var, width=7).pack(side='left', padx=(2, 12))
 
-        # Preset buttons
-        preset_frame = ttk.Frame(param_frame)
-        preset_frame.pack(side='left', padx=10)
-        for dist in [500, 1000, 2000, 5000]:
-            ttk.Button(preset_frame, text=str(dist), width=5,
-                       command=lambda d=dist: self.ticks_var.set(d)).pack(side='left', padx=1)
+        for val in [500, 1000, 2000, 5000]:
+            ttk.Button(params, text=str(val), width=5,
+                       command=lambda v=val: self.ticks_var.set(v)).pack(side='left', padx=1)
 
-        # Direction buttons - 3x3 grid
-        dir_frame = ttk.Frame(ctrl_frame)
-        dir_frame.pack(pady=5)
+        # Direction grid + rotation + utilities
+        bottom = ttk.Frame(frame)
+        bottom.pack(fill='x')
 
-        # Button configuration: (row, col, text, command)
-        buttons = [
-            (0, 0, "↖ FL", "DIAGFL"),
-            (0, 1, "↑ FWD", "FWD"),
-            (0, 2, "↗ FR", "DIAGFR"),
-            (1, 0, "← LEFT", "LEFT"),
-            (1, 1, "■ STOP", "STOP"),
-            (1, 2, "→ RIGHT", "RIGHT"),
-            (2, 0, "↙ BL", "DIAGBL"),
-            (2, 1, "↓ BWD", "BWD"),
-            (2, 2, "↘ BR", "DIAGBR"),
+        # 3x3 direction grid
+        grid = ttk.Frame(bottom)
+        grid.pack(side='left')
+
+        self._move_buttons = []
+        dirs = [
+            ("FL",  "DIAGFL", 0, 0), ("FWD", "FWD",    0, 1), ("FR",  "DIAGFR", 0, 2),
+            ("LEFT","LEFT",   1, 0), ("STOP","STOP",    1, 1), ("RIGHT","RIGHT", 1, 2),
+            ("BL",  "DIAGBL", 2, 0), ("BWD", "BWD",    2, 1), ("BR",  "DIAGBR", 2, 2),
         ]
-
-        for row, col, text, cmd in buttons:
+        for label, cmd, r, c in dirs:
             if cmd == "STOP":
-                btn = ttk.Button(dir_frame, text=text, width=10, command=self.stop)
+                btn = ttk.Button(grid, text=label, width=7, command=self._stop)
             else:
-                btn = ttk.Button(dir_frame, text=text, width=10, command=lambda c=cmd: self.move(c))
-            btn.grid(row=row, column=col, padx=3, pady=3)
+                btn = ttk.Button(grid, text=label, width=7, command=lambda d=cmd: self._move(d))
+                self._move_buttons.append(btn)
+            btn.grid(row=r, column=c, padx=2, pady=2)
 
-        # Rotation buttons
-        rotate_frame = ttk.Frame(ctrl_frame)
-        rotate_frame.pack(pady=5)
+        # Rotation + utilities
+        side_panel = ttk.Frame(bottom)
+        side_panel.pack(side='left', padx=(16, 0))
 
-        ttk.Button(rotate_frame, text="↺ Rotate Left", width=14,
-                   command=lambda: self.move("TLEFT")).pack(side='left', padx=10)
-        ttk.Button(rotate_frame, text="↻ Rotate Right", width=14,
-                   command=lambda: self.move("TRIGHT")).pack(side='left', padx=10)
+        rot = ttk.Frame(side_panel)
+        rot.pack(pady=(0, 8))
+        btn_ccw = ttk.Button(rot, text="CCW", width=8, command=lambda: self._move("TLEFT"))
+        btn_ccw.pack(side='left', padx=2)
+        self._move_buttons.append(btn_ccw)
+        btn_cw = ttk.Button(rot, text="CW", width=8, command=lambda: self._move("TRIGHT"))
+        btn_cw.pack(side='left', padx=2)
+        self._move_buttons.append(btn_cw)
 
-        # Utility buttons
-        util_frame = ttk.Frame(ctrl_frame)
-        util_frame.pack(pady=5)
+        util = ttk.Frame(side_panel)
+        util.pack()
+        ttk.Button(util, text="Read Enc", width=8, command=lambda: self._send("READ")).pack(side='left', padx=2)
 
-        ttk.Button(util_frame, text="Read Encoders", command=self.read_encoders, width=14).pack(side='left', padx=5)
-        ttk.Button(util_frame, text="Calibrate", command=self.calibrate, width=14).pack(side='left', padx=5)
+    def _build_velocity(self, parent):
+        frame = ttk.LabelFrame(parent, text="Velocity Control", padding=8)
+        frame.pack(fill='x', pady=4)
 
-        # === Manual Command Frame ===
-        cmd_frame = ttk.LabelFrame(main_frame, text="Manual Command", padding=10)
-        cmd_frame.pack(fill='x', pady=5)
+        # Top row: buttons
+        top = ttk.Frame(frame)
+        top.pack(fill='x', pady=(0, 4))
 
-        cmd_input_frame = ttk.Frame(cmd_frame)
-        cmd_input_frame.pack(fill='x')
+        self.vel_start_btn = ttk.Button(top, text="Start VEL", width=10, command=self._vel_start)
+        self.vel_start_btn.pack(side='left', padx=4)
+        self.vel_stop_btn = ttk.Button(top, text="Stop", width=8, command=self._vel_stop, state='disabled')
+        self.vel_stop_btn.pack(side='left', padx=4)
+
+        self.vel_status_label = ttk.Label(top, text="Inactive", style='Gray.TLabel')
+        self.vel_status_label.pack(side='left', padx=(12, 0))
+
+        ttk.Button(top, text="Zero All", width=8, command=self._vel_zero).pack(side='right', padx=4)
+
+        # Sliders
+        slider_frame = ttk.Frame(frame)
+        slider_frame.pack(fill='x')
+
+        self.vel_vx_var = tk.IntVar(value=0)
+        self.vel_vy_var = tk.IntVar(value=0)
+        self.vel_wz_var = tk.IntVar(value=0)
+
+        for label, var, desc in [
+            ("vx", self.vel_vx_var, "Forward / Back"),
+            ("vy", self.vel_vy_var, "Left / Right"),
+            ("wz", self.vel_wz_var, "CCW / CW"),
+        ]:
+            row = ttk.Frame(slider_frame)
+            row.pack(fill='x', pady=1)
+            ttk.Label(row, text=f"{label}:", width=3).pack(side='left')
+            scale = tk.Scale(row, from_=-255, to=255, orient='horizontal',
+                             variable=var, length=350, resolution=5, showvalue=True)
+            scale.pack(side='left', padx=(4, 8))
+            scale.bind('<Double-Button-1>', lambda e, v=var: v.set(0))
+            ttk.Label(row, text=desc, style='Gray.TLabel').pack(side='left')
+
+    def _build_diagnostics(self, parent):
+        frame = ttk.LabelFrame(parent, text="Diagnostics", padding=8)
+        frame.pack(fill='x', pady=4)
+
+        row1 = ttk.Frame(frame)
+        row1.pack(fill='x')
+
+        ttk.Label(row1, text="Motor:").pack(side='left')
+        self.motor_var = tk.StringVar(value="FL")
+        motor_combo = ttk.Combobox(row1, textvariable=self.motor_var, values=["FL", "FR", "RL", "RR"],
+                                   width=5, state='readonly')
+        motor_combo.pack(side='left', padx=(4, 16))
+
+        ttk.Label(row1, text="PWM:").pack(side='left')
+        self.pwm_var = tk.IntVar(value=0)
+        self.pwm_scale = tk.Scale(row1, from_=-255, to=255, orient='horizontal',
+                                  variable=self.pwm_var, length=250, resolution=5,
+                                  showvalue=True)
+        self.pwm_scale.pack(side='left', padx=(4, 0))
+
+        row2 = ttk.Frame(frame)
+        row2.pack(fill='x', pady=(6, 0))
+
+        ttk.Button(row2, text="Run Motor", width=12, command=self._test_motor).pack(side='left', padx=4)
+        ttk.Button(row2, text="Test Encoders", width=12, command=self._test_encoders).pack(side='left', padx=4)
+        ttk.Button(row2, text="Calibrate", width=12, command=self._calibrate).pack(side='left', padx=4)
+        ttk.Button(row2, text="Stop Test", width=12, command=self._stop).pack(side='left', padx=4)
+
+    def _build_telemetry(self, parent):
+        frame = ttk.LabelFrame(parent, text="Telemetry", padding=8)
+        frame.pack(fill='x', pady=4)
+
+        # Encoder row
+        enc_row = ttk.Frame(frame)
+        enc_row.pack(fill='x')
+
+        self._enc_labels = {}
+        for name in ['FL', 'FR', 'RL', 'RR']:
+            ttk.Label(enc_row, text=f"{name}:", style='Mono.TLabel').pack(side='left')
+            lbl = ttk.Label(enc_row, text="---", width=8, style='MonoBold.TLabel', anchor='e')
+            lbl.pack(side='left', padx=(0, 12))
+            self._enc_labels[name] = lbl
+
+        # Odometry row
+        odom_row = ttk.Frame(frame)
+        odom_row.pack(fill='x', pady=(4, 0))
+
+        self._odom_labels = {}
+        for name, unit in [('vx', 'mm/s'), ('vy', 'mm/s'), ('wz', 'mrad/s')]:
+            ttk.Label(odom_row, text=f"{name}:", style='Mono.TLabel').pack(side='left')
+            lbl = ttk.Label(odom_row, text="---", width=6, style='MonoBold.TLabel', anchor='e')
+            lbl.pack(side='left', padx=(0, 2))
+            ttk.Label(odom_row, text=unit, style='Gray.TLabel').pack(side='left', padx=(0, 12))
+            self._odom_labels[name] = lbl
+
+    def _build_monitor(self, parent):
+        frame = ttk.LabelFrame(parent, text="Serial Monitor", padding=8)
+        frame.pack(fill='both', expand=True, pady=4)
+
+        # Console text area (dark theme)
+        self.console = scrolledtext.ScrolledText(
+            frame, height=10, state='disabled',
+            font=('Consolas', 9), wrap='word',
+            bg='#1e1e1e', fg='#cccccc',
+            insertbackground='white', selectbackground='#264f78')
+        self.console.pack(fill='both', expand=True)
+
+        # Text tags for coloring
+        self.console.tag_config('tx', foreground='#569cd6')      # Blue - sent
+        self.console.tag_config('rx', foreground='#b5cea8')      # Light green - received
+        self.console.tag_config('ok', foreground='#4ec9b0', font=('Consolas', 9, 'bold'))
+        self.console.tag_config('err', foreground='#f44747', font=('Consolas', 9, 'bold'))
+        self.console.tag_config('info', foreground='#808080')    # Gray - system messages
+        self.console.tag_config('ts', foreground='#666666')      # Dim - timestamp
+
+        # Input row
+        input_row = ttk.Frame(frame)
+        input_row.pack(fill='x', pady=(6, 0))
 
         self.cmd_var = tk.StringVar()
-        self.cmd_entry = ttk.Entry(cmd_input_frame, textvariable=self.cmd_var, width=50)
-        self.cmd_entry.pack(side='left', padx=(0, 5), fill='x', expand=True)
-        self.cmd_entry.bind('<Return>', lambda e: self.send_manual())
+        cmd_entry = ttk.Entry(input_row, textvariable=self.cmd_var)
+        cmd_entry.pack(side='left', fill='x', expand=True, padx=(0, 4))
+        cmd_entry.bind('<Return>', lambda e: self._send_manual())
 
-        ttk.Button(cmd_input_frame, text="Send", command=self.send_manual, width=8).pack(side='left', padx=2)
-
-        # Quick commands
-        quick_frame = ttk.Frame(cmd_frame)
-        quick_frame.pack(fill='x', pady=(5, 0))
-
-        ttk.Label(quick_frame, text="Quick:").pack(side='left', padx=(0, 5))
-        for cmd_name in ["STOP", "READ", "SYNC"]:
-            ttk.Button(quick_frame, text=cmd_name, width=6,
-                       command=lambda c=cmd_name: self.send_cmd(c)).pack(side='left', padx=2)
-
-        # === Message Display Frame ===
-        msg_frame = ttk.LabelFrame(main_frame, text="Last Response", padding=10)
-        msg_frame.pack(fill='x', pady=5)
-
-        # Large message display
-        self.message_var = tk.StringVar(value="No response yet")
-        self.message_label = ttk.Label(msg_frame, textvariable=self.message_var,
-                                        style='Message.TLabel', anchor='center')
-        self.message_label.pack(fill='x', pady=5)
-
-        # Message details row
-        msg_detail_frame = ttk.Frame(msg_frame)
-        msg_detail_frame.pack(fill='x')
-
-        self.msg_time_label = ttk.Label(msg_detail_frame, text="", foreground='gray', font=('Arial', 8))
-        self.msg_time_label.pack(side='left')
-
-        self.msg_latency_label = ttk.Label(msg_detail_frame, text="", foreground='gray', font=('Arial', 8))
-        self.msg_latency_label.pack(side='right')
-
-        # === Log Frame ===
-        log_frame = ttk.LabelFrame(main_frame, text="Communication Log", padding=10)
-        log_frame.pack(fill='both', expand=True, pady=5)
-
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=8, state='disabled',
-                                                   font=('Consolas', 9), wrap='word')
-        self.log_text.pack(fill='both', expand=True)
-
-        # Configure log text tags
-        self.log_text.tag_config('tx', foreground='#0066cc')
-        self.log_text.tag_config('rx', foreground='#009933')
-        self.log_text.tag_config('error', foreground='#cc0000')
-        self.log_text.tag_config('info', foreground='#666666')
-        self.log_text.tag_config('ok', foreground='#009933', font=('Consolas', 9, 'bold'))
-        self.log_text.tag_config('done', foreground='#009933', font=('Consolas', 9, 'bold'))
-
-        # Log controls
-        log_ctrl_frame = ttk.Frame(log_frame)
-        log_ctrl_frame.pack(fill='x', pady=(5, 0))
+        ttk.Button(input_row, text="Send", width=6, command=self._send_manual).pack(side='left', padx=2)
+        ttk.Button(input_row, text="Clear", width=6, command=self._clear_console).pack(side='left', padx=2)
 
         self.autoscroll_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(log_ctrl_frame, text="Auto-scroll", variable=self.autoscroll_var).pack(side='left')
-        ttk.Button(log_ctrl_frame, text="Clear", command=self.clear_log, width=8).pack(side='right')
+        ttk.Checkbutton(input_row, text="Auto", variable=self.autoscroll_var).pack(side='left', padx=(8, 0))
 
-        # === Status Bar ===
-        status_frame = ttk.Frame(main_frame)
-        status_frame.pack(fill='x', pady=(5, 0))
+        self.filter_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(input_row, text="Filter", variable=self.filter_var).pack(side='left', padx=(4, 0))
 
-        ttk.Label(status_frame, text="Keys: W/A/S/D=Move | Q/E=Rotate | 7/9/1/3=Diag | Space=Stop | R=Read",
+    def _build_statusbar(self, parent):
+        bar = ttk.Frame(parent)
+        bar.pack(fill='x', pady=(2, 0))
+        ttk.Label(bar, text="Keys: W/A/S/D = Move | Q/E = Rotate | Space = Stop | R = Read | 7/9/1/3 = Diag",
                   font=('Arial', 8), foreground='gray').pack()
 
+    # ----- Key Bindings -----
+
     def _bind_keys(self):
-        """Bind keyboard shortcuts"""
-        # Movement: WASD
-        self.root.bind('<w>', lambda e: self.move("FWD"))
-        self.root.bind('<W>', lambda e: self.move("FWD"))
-        self.root.bind('<s>', lambda e: self.move("BWD"))
-        self.root.bind('<S>', lambda e: self.move("BWD"))
-        self.root.bind('<a>', lambda e: self.move("LEFT"))
-        self.root.bind('<A>', lambda e: self.move("LEFT"))
-        self.root.bind('<d>', lambda e: self.move("RIGHT"))
-        self.root.bind('<D>', lambda e: self.move("RIGHT"))
+        binds = {
+            'w': "FWD", 'W': "FWD", 's': "BWD", 'S': "BWD",
+            'a': "LEFT", 'A': "LEFT", 'd': "RIGHT", 'D': "RIGHT",
+            'q': "TLEFT", 'Q': "TLEFT", 'e': "TRIGHT", 'E': "TRIGHT",
+        }
+        for key, cmd in binds.items():
+            self.root.bind(f'<{key}>', lambda e, c=cmd: self._move(c))
 
-        # Rotation: Q/E
-        self.root.bind('<q>', lambda e: self.move("TLEFT"))
-        self.root.bind('<Q>', lambda e: self.move("TLEFT"))
-        self.root.bind('<e>', lambda e: self.move("TRIGHT"))
-        self.root.bind('<E>', lambda e: self.move("TRIGHT"))
+        diag_binds = {'7': "DIAGFL", '9': "DIAGFR", '1': "DIAGBL", '3': "DIAGBR"}
+        for key, cmd in diag_binds.items():
+            self.root.bind(f'<Key-{key}>', lambda e, c=cmd: self._move(c))
+            self.root.bind(f'<KP_{key}>', lambda e, c=cmd: self._move(c))
 
-        # Diagonal: 7/9/1/3
-        self.root.bind('<7>', lambda e: self.move("DIAGFL"))
-        self.root.bind('<9>', lambda e: self.move("DIAGFR"))
-        self.root.bind('<1>', lambda e: self.move("DIAGBL"))
-        self.root.bind('<3>', lambda e: self.move("DIAGBR"))
-        self.root.bind('<KP_7>', lambda e: self.move("DIAGFL"))
-        self.root.bind('<KP_9>', lambda e: self.move("DIAGFR"))
-        self.root.bind('<KP_1>', lambda e: self.move("DIAGBL"))
-        self.root.bind('<KP_3>', lambda e: self.move("DIAGBR"))
+        self.root.bind('<space>', lambda e: self._stop())
+        self.root.bind('<Escape>', lambda e: self._stop())
+        self.root.bind('<r>', lambda e: self._send("READ"))
+        self.root.bind('<R>', lambda e: self._send("READ"))
 
-        # Stop: Space or Escape
-        self.root.bind('<space>', lambda e: self.stop())
-        self.root.bind('<Escape>', lambda e: self.stop())
+    # ----- Connection -----
 
-        # Read encoders: R
-        self.root.bind('<r>', lambda e: self.read_encoders())
-        self.root.bind('<R>', lambda e: self.read_encoders())
+    def _refresh_ports(self):
+        ports = self.serial.list_ports()
+        devices = [p[0] for p in ports]
+        self.port_combo['values'] = devices
 
-    def _update_status(self):
-        """Periodic status update"""
-        if self.robot.connected:
-            # Check for response timeout
-            if self.waiting_for_response:
-                elapsed = time.time() - self.command_start_time
-                if elapsed > 15.0:
-                    self.response_label.config(text="No response", foreground='orange')
-                    self.waiting_for_response = False
-                else:
-                    self.response_label.config(text=f"Waiting... {elapsed:.0f}s", foreground='gray')
-        else:
-            self.response_label.config(text="")
+        auto = self.serial.detect_arduino()
+        if auto:
+            self.port_var.set(auto)
+            self._log_info(f"Auto-detected: {auto}")
+        elif devices:
+            self.port_var.set(devices[0])
 
-        # Schedule next update
-        self.root.after(500, self._update_status)
-
-    def on_connection_type_changed(self):
-        """Handle connection type change"""
-        conn_type = self.conn_type_var.get()
-
-        # Hide all frames
-        self.bt_frame.pack_forget()
-        self.bt_status_frame.pack_forget()
-        self.serial_frame.pack_forget()
-
-        # Show selected frame
-        if conn_type == "serial":
-            self.serial_frame.pack(fill='x', pady=5)
-        else:
-            self.bt_frame.pack(fill='x', pady=5)
-            self.bt_status_frame.pack(fill='x', pady=(0, 5))
-
-    def check_bt_status(self):
-        """Check Bluetooth device status"""
-        bt_selection = self.bt_var.get()
-        if not bt_selection:
-            self.log("No device selected", 'error')
-            self.bt_status_label.config(text="BT: No device selected", foreground='red')
-            return
-
-        try:
-            bt_address = bt_selection.split('(')[1].split(')')[0]
-        except IndexError:
-            self.log("Invalid device selection", 'error')
-            self.bt_status_label.config(text="BT: Invalid selection", foreground='red')
-            return
-
-        self.bt_status_label.config(text="BT: Checking...", foreground='gray')
-        self.root.update()
-
-        info = self.robot.check_bt_status(bt_address)
-
-        status_parts = []
-        status_parts.append("Paired" if info['paired'] else "Not Paired")
-        if info['connected']:
-            status_parts.append("Connected")
-        if info['trusted']:
-            status_parts.append("Trusted")
-
-        status_str = ', '.join(status_parts)
-        self.log(f"BT Status [{bt_address}]: {status_str}", 'info')
-
-        # Update status label with color coding
-        if info['paired'] and info['connected']:
-            self.bt_status_label.config(text=f"BT: {status_str}", foreground='green')
-        elif info['paired']:
-            self.bt_status_label.config(text=f"BT: {status_str}", foreground='#0066cc')
-        else:
-            self.bt_status_label.config(text=f"BT: {status_str}", foreground='orange')
-
-        if info['connected'] and not self.robot.connected:
-            self.log("Warning: Device connected elsewhere", 'error')
-            self.bt_status_label.config(text=f"BT: {status_str} (elsewhere!)", foreground='orange')
-
-    def refresh_ports(self):
-        """Refresh serial ports"""
-        ports = self.robot.list_ports()
-        arduino_ports = self.robot.detect_arduino()
-
-        port_list = [p['device'] for p in ports]
-        self.port_combo['values'] = port_list
-
-        if arduino_ports:
-            self.port_var.set(arduino_ports[0])
-            self.log(f"Auto-detected: {arduino_ports[0]}", 'info')
-        elif port_list:
-            self.port_var.set(port_list[0])
-
-    def scan_bluetooth(self):
-        """Scan for Bluetooth devices"""
-        if not BLUETOOTH_AVAILABLE:
-            messagebox.showerror("Error", "Bluetooth not available")
-            return
-
-        self.bt_scan_btn.config(state='disabled', text="Scanning...")
-        self.log("Scanning for Bluetooth devices...", 'info')
-
-        def scan_thread():
-            devices = self.robot.scan_bluetooth_devices()
-            self.root.after(0, lambda: self._on_bt_scan_complete(devices))
-
-        threading.Thread(target=scan_thread, daemon=True).start()
-
-    def _on_bt_scan_complete(self, devices):
-        """Handle Bluetooth scan results"""
-        self.bt_scan_btn.config(state='normal', text="Scan")
-
-        if not devices:
-            self.log("No devices found", 'info')
-            return
-
-        existing = {d['address'] for d in self.bt_devices}
-        new_devices = [d for d in devices if d['address'] not in existing]
-
-        if new_devices:
-            self.bt_devices.extend(new_devices)
-            self.bt_combo['values'] = [f"{d['name']} ({d['address']})" for d in self.bt_devices]
-            self.log(f"Found {len(new_devices)} new device(s)", 'info')
-        else:
-            self.log("No new devices found", 'info')
-
-    def toggle_connection(self):
-        """Connect or disconnect"""
-        if self.robot.connected:
-            self.robot.disconnect()
+    def _toggle_connect(self):
+        if self.serial.connected:
+            self._vel_stop()
+            self.serial.disconnect()
             self.connect_btn.config(text="Connect")
-            self.status_label.config(text="Disconnected", style='Disconnected.TLabel')
-            self.bt_status_label.config(text="BT: Disconnected", foreground='gray')
-            self.message_var.set("Disconnected")
-            self.message_label.config(foreground='gray')
-            self.log("Disconnected", 'info')
+            self.status_label.config(text="  Disconnected", style='Red.TLabel')
+            self._set_state("")
+            self._log_info("Disconnected")
         else:
-            conn_type = self.conn_type_var.get()
-
-            if conn_type == "serial":
-                port = self.port_var.get()
-                if not port:
-                    messagebox.showerror("Error", "Select a port")
-                    return
-
-                success, msg = self.robot.connect(port)
-                if success:
-                    self._on_connected("Serial")
-                    self.log(msg, 'info')
-                else:
-                    messagebox.showerror("Error", msg)
-                    self.log(f"Error: {msg}", 'error')
+            port = self.port_var.get()
+            if not port:
+                messagebox.showerror("Error", "Select a serial port")
+                return
+            ok, msg = self.serial.connect(port)
+            if ok:
+                self.connect_btn.config(text="Disconnect")
+                self.status_label.config(text=f"  {port} (115200)", style='Green.TLabel')
+                self._log_info(msg)
             else:
-                bt_selection = self.bt_var.get()
-                if not bt_selection:
-                    messagebox.showerror("Error", "Select a Bluetooth device")
-                    return
+                messagebox.showerror("Connection Error", msg)
+                self._log_err(msg)
 
-                try:
-                    bt_address = bt_selection.split('(')[1].split(')')[0]
-                except IndexError:
-                    messagebox.showerror("Error", "Invalid selection")
-                    return
-
-                self.log(f"Connecting to {bt_address}...", 'info')
-                self.connect_btn.config(state='disabled', text="Connecting...")
-
-                def connect_thread():
-                    success, msg = self.robot.connect_bluetooth(bt_address)
-                    self.root.after(0, lambda: self._on_bt_connect_result(success, msg))
-
-                threading.Thread(target=connect_thread, daemon=True).start()
-
-    def _on_connected(self, conn_type: str):
-        """Handle successful connection"""
-        self.connect_btn.config(text="Disconnect", state='normal')
-        self.status_label.config(text=f"Connected ({conn_type})", style='Connected.TLabel')
-
-        # Update BT status if Bluetooth connection
-        if conn_type == "Bluetooth":
-            self.bt_status_label.config(text="BT: Connected", foreground='green')
-
-        # Update message display
-        self.message_var.set("Connected - Ready for commands")
-        self.message_label.config(foreground='green')
-
-    def _on_bt_connect_result(self, success: bool, msg: str):
-        """Handle Bluetooth connection result"""
-        self.connect_btn.config(state='normal')
-
-        if success:
-            self._on_connected("Bluetooth")
-            self.log(msg, 'ok')
-        else:
+    def _on_disconnect(self, reason: str):
+        def update():
+            self._vel_stop()
             self.connect_btn.config(text="Connect")
-            self.bt_status_label.config(text="BT: Connection failed", foreground='red')
-            self.message_var.set(f"Connection failed: {msg}")
-            self.message_label.config(foreground='red')
-            messagebox.showerror("Connection Error", msg)
-            self.log(f"Error: {msg}", 'error')
+            self.status_label.config(text="  Connection Lost", style='Red.TLabel')
+            self._set_state("")
+            self._log_err(f"DISCONNECTED: {reason}")
+        self.root.after(0, update)
 
-    def log(self, msg: str, tag: str = None):
-        """Add message to log"""
-        self.log_text.config(state='normal')
-        timestamp = time.strftime("%H:%M:%S")
-        line = f"[{timestamp}] {msg}\n"
+    # ----- Robot State -----
 
-        if tag:
-            self.log_text.insert('end', line, tag)
+    def _set_state(self, state: str):
+        styles = {
+            'IDLE': 'Gray.TLabel', 'MOVING': 'Green.TLabel',
+            'CALIBRATING': 'Yellow.TLabel',
+            'ERROR': 'Red.TLabel', 'BUSY': 'Yellow.TLabel', '': 'Gray.TLabel',
+        }
+        self.state_label.config(
+            text=f"  State: {state}" if state else "",
+            style=styles.get(state, 'Gray.TLabel')
+        )
+
+    # ----- Serial I/O -----
+
+    def _send(self, cmd: str):
+        if self.serial.send(cmd):
+            self._log_tx(cmd)
         else:
-            self.log_text.insert('end', line)
+            self._log_err("Not connected")
 
-        if self.autoscroll_var.get():
-            self.log_text.see('end')
-        self.log_text.config(state='disabled')
-
-    def clear_log(self):
-        """Clear log"""
-        self.log_text.config(state='normal')
-        self.log_text.delete('1.0', 'end')
-        self.log_text.config(state='disabled')
-
-    def on_serial_data(self, data: str):
-        """Handle received data"""
-        # Calculate latency if we're waiting for a response
-        latency_ms = 0
-        if self.waiting_for_response and self.command_start_time > 0:
-            latency_ms = int((time.time() - self.command_start_time) * 1000)
-
-        # Determine tag and color based on response
-        tag = 'rx'
-        msg_color = '#333333'
-        if data.startswith('DONE'):
-            tag = 'done'
-            msg_color = 'green'
-            self.waiting_for_response = False
-            self.response_label.config(text="Done", foreground='green')
-        elif data.startswith('OK'):
-            tag = 'ok'
-            msg_color = '#009933'
-        elif data.startswith('ERROR'):
-            tag = 'error'
-            msg_color = 'red'
-            self.waiting_for_response = False
-            self.response_label.config(text="Error", foreground='red')
-        elif data.startswith('READY'):
-            tag = 'ok'
-            msg_color = '#009933'
-        elif data.startswith('BUSY'):
-            tag = 'error'
-            msg_color = 'orange'
-        elif data.startswith('STALL') or data.startswith('Stall'):
-            tag = 'error'
-            msg_color = 'red'
-        elif data.startswith('Moving:'):
-            tag = 'info'
-            msg_color = '#666666'
-
-        def update_ui():
-            # Update log
-            self.log(f"← {data}", tag)
-
-            # Update prominent message display
-            self.message_var.set(data)
-            self.message_label.config(foreground=msg_color)
-
-            # Update timestamp
-            self.msg_time_label.config(text=time.strftime("%H:%M:%S"))
-
-            # Update latency if applicable
-            if latency_ms > 0:
-                self.msg_latency_label.config(text=f"Latency: {latency_ms}ms")
-            else:
-                self.msg_latency_label.config(text="")
-
-        self.root.after(0, update_ui)
-
-    def on_connection_lost(self, error_msg: str):
-        """Handle connection loss"""
-        def update_ui():
-            self.connect_btn.config(text="Connect", state='normal')
-            self.status_label.config(text="Connection Lost!", style='Warning.TLabel')
-            self.bt_status_label.config(text="BT: Disconnected", foreground='red')
-            self.message_var.set(f"CONNECTION LOST: {error_msg}")
-            self.message_label.config(foreground='red')
-            self.log(f"CONNECTION LOST: {error_msg}", 'error')
-            messagebox.showwarning("Connection Lost", f"Connection lost:\n{error_msg}")
-        self.root.after(0, update_ui)
-
-    def send_cmd(self, cmd: str):
-        """Send command"""
-        if self.robot.send(cmd):
-            self.log(f"→ {cmd}", 'tx')
-            self.waiting_for_response = True
-            self.command_start_time = time.time()
-            self.last_command = cmd
-            self.response_label.config(text="Sent...", foreground='gray')
-        else:
-            self.log("Not connected", 'error')
-
-    def send_manual(self):
-        """Send manual command"""
+    def _send_manual(self):
         cmd = self.cmd_var.get().strip().upper()
         if cmd:
-            self.send_cmd(cmd)
+            self._send(cmd)
             self.cmd_var.set("")
 
-    def move(self, direction: str):
-        """Send movement command"""
+    def _on_rx(self, data: str):
+        """Handle received serial data (called from reader thread)."""
+        # Schedule GUI updates on main thread
+        self.root.after(0, lambda: self._process_rx(data))
+
+    def _process_rx(self, data: str):
+        """Process received data: update telemetry, state, and console."""
+        # --- Update telemetry dashboard ---
+        is_telemetry = data.startswith(_TELEMETRY_PREFIXES)
+
+        m = _ENC_RE.match(data)
+        if m:
+            self._enc_labels['FL'].config(text=m.group(1))
+            self._enc_labels['FR'].config(text=m.group(2))
+            self._enc_labels['RL'].config(text=m.group(3))
+            self._enc_labels['RR'].config(text=m.group(4))
+
+        m = _ODOM_RE.match(data)
+        if m:
+            self._odom_labels['vx'].config(text=m.group(1))
+            self._odom_labels['vy'].config(text=m.group(2))
+            self._odom_labels['wz'].config(text=m.group(3))
+
+        m = _TEST_RE.match(data)
+        if m:
+            self._enc_labels['FL'].config(text=m.group(1))
+            self._enc_labels['FR'].config(text=m.group(2))
+            self._enc_labels['RL'].config(text=m.group(3))
+            self._enc_labels['RR'].config(text=m.group(4))
+
+        # --- Update robot state ---
+        if data.startswith(('READY', 'DONE')):
+            self._set_state('IDLE')
+        elif data == 'OK':
+            self._set_state('MOVING')
+        elif data.startswith('BUSY'):
+            self._set_state('BUSY')
+        elif data.startswith(('ERROR', 'STALL')):
+            self._set_state('ERROR')
+
+        m = _CALIB_RE.match(data)
+        if m:
+            phase = m.group(1)
+            if phase == 'start':
+                self._set_state('CALIBRATING')
+            elif phase == 'aborted':
+                self._set_state('IDLE')
+
+        # --- Console output (with optional filter) ---
+        if is_telemetry and self.filter_var.get():
+            return  # Filtered out
+
+        tag = 'rx'
+        if data.startswith(('DONE', 'READY')):
+            tag = 'ok'
+        elif data.startswith(('ERROR', 'BUSY', 'STALL')):
+            tag = 'err'
+        elif data.startswith('CALIB,'):
+            tag = 'ok'
+        elif data.startswith('Moving:'):
+            tag = 'info'
+
+        self._log_rx(data, tag)
+
+    # ----- Commands -----
+
+    def _move(self, direction: str):
+        if self._vel_active:
+            return  # Block position moves while VEL is active
         speed = self.speed_var.get()
         ticks = self.ticks_var.get()
-
-        # Validate
         if speed < 20 or speed > 255:
-            self.log(f"Invalid speed: {speed} (must be 20-255)", 'error')
-            return
-        if ticks < 1:
-            self.log(f"Invalid ticks: {ticks} (must be > 0)", 'error')
+            self._log_err(f"Speed out of range: {speed}")
             return
 
-        # Build command
         cmd_map = {
-            "FWD": f"FWD,{speed},{ticks}",
-            "BWD": f"BWD,{speed},{ticks}",
-            "LEFT": f"LEFT,{speed},{ticks}",
-            "RIGHT": f"RIGHT,{speed},{ticks}",
-            "TLEFT": f"TURN,{speed},{ticks}",
-            "TRIGHT": f"TURN,{speed},{-ticks}",
-            "DIAGFL": f"DIAGFL,{speed},{ticks}",
-            "DIAGFR": f"DIAGFR,{speed},{ticks}",
-            "DIAGBL": f"DIAGBL,{speed},{ticks}",
-            "DIAGBR": f"DIAGBR,{speed},{ticks}",
+            "FWD": f"FWD,{speed},{ticks}", "BWD": f"BWD,{speed},{ticks}",
+            "LEFT": f"LEFT,{speed},{ticks}", "RIGHT": f"RIGHT,{speed},{ticks}",
+            "TLEFT": f"TURN,{speed},{ticks}", "TRIGHT": f"TURN,{speed},{-ticks}",
+            "DIAGFL": f"DIAGFL,{speed},{ticks}", "DIAGFR": f"DIAGFR,{speed},{ticks}",
+            "DIAGBL": f"DIAGBL,{speed},{ticks}", "DIAGBR": f"DIAGBR,{speed},{ticks}",
         }
-
         if direction in cmd_map:
-            self.send_cmd(cmd_map[direction])
+            self._send(cmd_map[direction])
+
+    def _stop(self):
+        if self._vel_active:
+            self._vel_stop()  # Already sends STOP
         else:
-            self.log(f"Unknown direction: {direction}", 'error')
+            self._send("STOP")
 
-    def stop(self):
-        """Emergency stop"""
-        self.send_cmd("STOP")
+    def _test_motor(self):
+        motor = self.motor_var.get()
+        pwm = self.pwm_var.get()
+        self._send(f"TMOTOR,{motor},{pwm}")
 
-    def read_encoders(self):
-        """Read encoders"""
-        self.send_cmd("READ")
+    def _test_encoders(self):
+        self._send("TENC")
 
-    def calibrate(self):
-        """Calibrate motors"""
-        if messagebox.askyesno("Calibrate", "Robot will move during calibration.\nContinue?"):
-            self.send_cmd("SYNC")
+    def _calibrate(self):
+        self._send("CALIB")
+
+    # ----- VEL Mode -----
+
+    def _vel_start(self):
+        if self._vel_active:
+            return
+        self._vel_active = True
+        self.vel_start_btn.config(state='disabled')
+        self.vel_stop_btn.config(state='normal')
+        self.vel_status_label.config(text="Streaming at 10Hz", style='Green.TLabel')
+        for btn in self._move_buttons:
+            btn.config(state='disabled')
+        self._vel_send_tick()
+
+    def _vel_stop(self):
+        if not self._vel_active:
+            return
+        self._vel_active = False
+        if self._vel_timer_id is not None:
+            self.root.after_cancel(self._vel_timer_id)
+            self._vel_timer_id = None
+        self.vel_start_btn.config(state='normal')
+        self.vel_stop_btn.config(state='disabled')
+        self.vel_status_label.config(text="Inactive", style='Gray.TLabel')
+        for btn in self._move_buttons:
+            btn.config(state='normal')
+        self._send("STOP")
+
+    def _vel_send_tick(self):
+        if not self._vel_active:
+            return
+        vx = self.vel_vx_var.get()
+        vy = self.vel_vy_var.get()
+        wz = self.vel_wz_var.get()
+        if self.serial.send(f"VEL,{vx},{vy},{wz}"):
+            pass  # Don't log every tick - too noisy
+        self._vel_timer_id = self.root.after(100, self._vel_send_tick)  # 10Hz
+
+    def _vel_zero(self):
+        self.vel_vx_var.set(0)
+        self.vel_vy_var.set(0)
+        self.vel_wz_var.set(0)
+
+    # ----- Console Logging -----
+
+    def _log(self, text: str, tag: str):
+        self.console.config(state='normal')
+        ts = time.strftime("%H:%M:%S")
+        self.console.insert('end', f"{ts} ", 'ts')
+        self.console.insert('end', f"{text}\n", tag)
+        if self.autoscroll_var.get():
+            self.console.see('end')
+        self.console.config(state='disabled')
+
+    def _log_tx(self, cmd: str):
+        self._log(f"-> {cmd}", 'tx')
+
+    def _log_rx(self, data: str, tag: str = 'rx'):
+        self._log(f"<- {data}", tag)
+
+    def _log_info(self, msg: str):
+        self._log(f"-- {msg}", 'info')
+
+    def _log_err(self, msg: str):
+        self._log(f"!! {msg}", 'err')
+
+    def _clear_console(self):
+        self.console.config(state='normal')
+        self.console.delete('1.0', 'end')
+        self.console.config(state='disabled')
+
+    # ----- Run -----
 
     def run(self):
-        """Start GUI"""
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.mainloop()
 
-    def on_close(self):
-        """Handle window close"""
-        self.robot.disconnect()
+    def _on_close(self):
+        self._vel_stop()
+        self.serial.disconnect()
         self.root.destroy()
 
 
-def main():
-    app = RobotGUI()
-    app.run()
-
-
 if __name__ == "__main__":
-    main()
+    RobotGUI().run()

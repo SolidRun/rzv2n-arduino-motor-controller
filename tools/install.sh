@@ -28,13 +28,12 @@ fi
 
 # Step 1: Install system dependencies
 echo -e "${BLUE}Step 1: Installing system dependencies...${NC}"
-echo "This will install: libbluetooth-dev build-essential python3-dev python3-tk python3-venv"
+echo "This will install: build-essential python3-dev python3-tk python3-venv"
 echo ""
 
 # Check what needs to be installed
 MISSING_PACKAGES=()
 
-dpkg -s libbluetooth-dev &>/dev/null || MISSING_PACKAGES+=("libbluetooth-dev")
 dpkg -s build-essential &>/dev/null || MISSING_PACKAGES+=("build-essential")
 dpkg -s python3-dev &>/dev/null || MISSING_PACKAGES+=("python3-dev")
 dpkg -s python3-tk &>/dev/null || MISSING_PACKAGES+=("python3-tk")
@@ -88,17 +87,6 @@ echo "  - Installing pyserial..."
 ./venv/bin/pip install "pyserial>=3.5" -q
 echo -e "${GREEN}    ✓ pyserial installed${NC}"
 
-# Install Bluetooth support
-echo "  - Installing Bluetooth support (pybluez-updated)..."
-if ./venv/bin/pip install "pybluez-updated" -q 2>/dev/null; then
-    echo -e "${GREEN}    ✓ Bluetooth support installed${NC}"
-    BT_INSTALLED=1
-else
-    echo -e "${YELLOW}    ⚠ Bluetooth installation failed${NC}"
-    echo -e "${YELLOW}    Serial mode will still work!${NC}"
-    BT_INSTALLED=0
-fi
-
 echo ""
 
 # Step 6: Verify installation
@@ -111,17 +99,6 @@ if ./venv/bin/python -c "import serial" 2>/dev/null; then
 else
     echo -e "${RED}✗ pyserial not working${NC}"
     exit 1
-fi
-
-# Check Bluetooth
-if [ $BT_INSTALLED -eq 1 ]; then
-    if ./venv/bin/python -c "import bluetooth" 2>/dev/null; then
-        echo -e "${GREEN}✓ pybluez-updated (Bluetooth enabled)${NC}"
-    else
-        echo -e "${YELLOW}⚠ pybluez-updated installed but not importing${NC}"
-    fi
-else
-    echo -e "${YELLOW}⚠ Bluetooth support not available${NC}"
 fi
 
 # Check tkinter
@@ -141,14 +118,5 @@ echo "To run the Robot Controller GUI:"
 echo ""
 echo -e "  ${GREEN}python3 run.py${NC}"
 echo ""
-
-if [ $BT_INSTALLED -eq 1 ]; then
-    echo -e "${GREEN}✓ Bluetooth support is ENABLED${NC}"
-    echo "  You can use both Serial and Bluetooth connections"
-else
-    echo -e "${YELLOW}⚠ Bluetooth support is DISABLED${NC}"
-    echo "  You can still use Serial/USB connection"
-    echo "  To enable Bluetooth later, run this script again"
-fi
 
 echo ""

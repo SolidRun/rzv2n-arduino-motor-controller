@@ -1,85 +1,140 @@
 # Mecanum 4WD Robot - Control Tools
 
-Python GUI and test tools for controlling the Mecanum wheel robot.
+Python GUI and test tools for controlling the Mecanum wheel robot over USB serial.
 
-## Quick Start
+---
 
-```bash
-# Setup (first time)
-./install.sh
+## Installation
 
-# Run GUI
-python3 run.py
+The installer works on **Windows, Linux, and macOS** — one script for all platforms.
+
+### Requirements
+- Python 3.8 or newer — download from [python.org](https://www.python.org/downloads/)
+
+### Run the installer
+
+**Windows:**
+```powershell
+py install.py
 ```
+
+**Linux / macOS:**
+```bash
+python3 install.py
+```
+
+**Options:**
+```bash
+py install.py --clean   # wipe venv and reinstall from scratch
+py install.py --check   # verify existing install only
+```
+
+The installer will:
+1. Check your Python version and tkinter
+2. Create a virtual environment (`venv/`)
+3. Upgrade pip and install all dependencies
+4. Confirm everything is working
+
+---
+
+## Running the Robot GUI
+
+After installation, launch the GUI with:
+
+**Windows:**
+```powershell
+venv\Scripts\python.exe robot_test.py
+```
+
+**Linux / macOS:**
+```bash
+venv/bin/python robot_test.py
+```
+
+---
 
 ## Files
 
 | File | Description |
 |------|-------------|
 | `robot_test.py` | Main GUI application |
-| `run.py` | GUI launcher (uses venv) |
-| `install.sh` | One-command setup script |
+| `install.py` | Cross-platform setup script |
 | `requirements.txt` | Python dependencies |
-| `START_HERE.txt` | Quick reference guide |
 | `hw_test.py` | Hardware test CLI (motors & encoders) |
+| `run.py` | Alternative launcher |
+| `START_HERE.txt` | Quick reference guide |
+
+---
 
 ## GUI Features
 
-- **Serial Connection**: Auto-detects Arduino ports
-- **Keyboard Controls**: WASD + QE for movement
-- **Live Monitor**: Real-time serial output
+- **Connection**: Auto-detects Arduino/USB serial ports
+- **Position Control**: Direction buttons with speed and tick parameters
+- **Velocity Control**: Real-time streaming at 10 Hz with sliders
+- **Diagnostics**: Per-motor PWM test and encoder test
+- **Telemetry**: Live encoder and odometry display
+- **Serial Monitor**: Full-color console with send/receive history
 
 ### Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
-| W/S | Forward/Backward |
-| A/D | Strafe Left/Right |
-| Q/E | Turn Left/Right |
-| Space | Emergency Stop |
+| W / S | Forward / Backward |
+| A / D | Strafe Left / Right |
+| Q / E | Turn CCW / CW |
+| 7 / 9 / 1 / 3 | Diagonal moves |
+| Space / Esc | Emergency Stop |
 | R | Read Encoders |
+
+---
 
 ## Serial Commands
 
 ```
-FWD,<speed>,<ticks>    Move forward
-BWD,<speed>,<ticks>    Move backward
-TURN,<speed>,<ticks>   Turn (positive=left, negative=right)
-STOP                   Emergency stop
-READ                   Read encoder values
-SYNC                   Calibrate motors
-FWDS                   Smart forward with PID
+FWD,<speed>,<ticks>       Move forward
+BWD,<speed>,<ticks>       Move backward
+LEFT,<speed>,<ticks>      Strafe left
+RIGHT,<speed>,<ticks>     Strafe right
+TURN,<speed>,<ticks>      Turn (positive=left, negative=right)
+DIAGFL,<speed>,<ticks>    Diagonal front-left
+VEL,<vx>,<vy>,<wz>        Continuous velocity control
+TMOTOR,<motor>,<pwm>      Test single motor (FL/FR/RL/RR)
+TENC                      Test encoders
+CALIB                     Calibrate motors
+READ                      Read encoder values
+STOP                      Emergency stop
 ```
 
 Parameters:
-- `speed`: 20-255
-- `ticks`: encoder ticks (e.g., 1000)
+- `speed`: 20–255
+- `ticks`: encoder ticks (e.g. 1000)
 
-## Requirements
-
-### System (Linux)
-```bash
-sudo apt install python3 python3-pip python3-tk python3-venv
-```
-
-### Python
-- pyserial >= 3.5
+---
 
 ## Troubleshooting
 
-### Serial Port Permission Denied
+### `py` not found (Windows)
+Use `python` instead, or install Python from [python.org](https://www.python.org/downloads/) and tick **"Add Python to PATH"**.
+
+### Cygwin/WSL conflict (Windows)
+If `python` resolves to a Cygwin binary, use the `py` launcher:
+```powershell
+py install.py
+```
+
+### Serial port permission denied (Linux)
 ```bash
 sudo usermod -a -G dialout $USER
-# Logout and login again
+# Log out and back in
 ```
 
-### GUI Won't Start
+### GUI won't start — tkinter missing (Linux)
 ```bash
-sudo apt install python3-tk
+sudo apt install python3-tk        # Debian / Ubuntu
+sudo dnf install python3-tkinter   # Fedora / RHEL
 ```
 
-### Virtual Environment Issues
+### Reinstall from scratch
 ```bash
-rm -rf venv
-./install.sh
+py install.py --clean
 ```

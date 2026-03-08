@@ -152,9 +152,9 @@ class RobotGUI:
         # Main window
         self.root = tk.Tk()
         self.root.title("Mecanum Robot Controller")
-        self.root.geometry("850x820")
+        self.root.geometry("900x980")
         self.root.resizable(True, True)
-        self.root.minsize(700, 650)
+        self.root.minsize(750, 750)
 
         self._setup_style()
         self._build_ui()
@@ -375,7 +375,7 @@ class RobotGUI:
 
         # Console text area (dark theme)
         self.console = scrolledtext.ScrolledText(
-            frame, height=10, state='disabled',
+            frame, height=15, state='disabled',
             font=('Consolas', 9), wrap='word',
             bg='#1e1e1e', fg='#cccccc',
             insertbackground='white', selectbackground='#264f78')
@@ -394,12 +394,12 @@ class RobotGUI:
         input_row.pack(fill='x', pady=(6, 0))
 
         self.cmd_var = tk.StringVar()
-        cmd_entry = ttk.Entry(input_row, textvariable=self.cmd_var)
-        cmd_entry.pack(side='left', fill='x', expand=True, padx=(0, 4))
+        cmd_entry = ttk.Entry(input_row, textvariable=self.cmd_var, font=('Consolas', 11))
+        cmd_entry.pack(side='left', fill='x', expand=True, padx=(0, 6), ipady=4)
         cmd_entry.bind('<Return>', lambda e: self._send_manual())
 
-        ttk.Button(input_row, text="Send", width=6, command=self._send_manual).pack(side='left', padx=2)
-        ttk.Button(input_row, text="Clear", width=6, command=self._clear_console).pack(side='left', padx=2)
+        ttk.Button(input_row, text="Send", width=8, command=self._send_manual).pack(side='left', padx=2)
+        ttk.Button(input_row, text="Clear", width=8, command=self._clear_console).pack(side='left', padx=2)
 
         self.autoscroll_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(input_row, text="Auto", variable=self.autoscroll_var).pack(side='left', padx=(8, 0))

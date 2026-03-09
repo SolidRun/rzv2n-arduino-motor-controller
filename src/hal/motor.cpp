@@ -10,9 +10,9 @@
  *
  * PCA9685 channel mapping (physical motor -> PCA9685 channels):
  *   Motor 1 (FL): CH8  (IN1), CH9  (IN2) -> MOTOR_FL = index 0
- *   Motor 2:      CH10 (IN1), CH11 (IN2) -> MOTOR_FR = index 3
- *   Motor 3:      CH15 (IN1), CH14 (IN2) -> MOTOR_RL = index 1
- *   Motor 4:      CH13 (IN1), CH12 (IN2) -> MOTOR_RR = index 2
+ *   Motor 2 (RL): CH10 (IN1), CH11 (IN2) -> MOTOR_RL = index 1
+ *   Motor 3 (RR): CH15 (IN1), CH14 (IN2) -> MOTOR_RR = index 2
+ *   Motor 4 (FR): CH13 (IN1), CH12 (IN2) -> MOTOR_FR = index 3
  */
 
 #include "motor.h"

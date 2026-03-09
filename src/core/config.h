@@ -80,13 +80,13 @@
 #define NUM_MOTORS              4
 
 // Motor indices (wheel positions for Mecanum drive)
-// Non-sequential ordering matches physical wiring:
-//   Motor1=FL, Motor2=FR(idx3), Motor3=RL(idx1), Motor4=RR(idx2)
+// Sequential ordering matches physical wiring:
+//   Motor1=FL(idx0), Motor2=RL(idx1), Motor3=RR(idx2), Motor4=FR(idx3)
 // All arrays (MOTOR_CH, speeds, encoders) use this indexing.
 #define MOTOR_FL                0       // Front-Left  -> Motor1
-#define MOTOR_RL                1       // Rear-Left   -> Motor3
-#define MOTOR_RR                2       // Rear-Right  -> Motor4
-#define MOTOR_FR                3       // Front-Right -> Motor2
+#define MOTOR_RL                1       // Rear-Left   -> Motor2
+#define MOTOR_RR                2       // Rear-Right  -> Motor3
+#define MOTOR_FR                3       // Front-Right -> Motor4
 
 // Speed limits
 #define SPEED_MIN               20

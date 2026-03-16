@@ -42,7 +42,7 @@ Move a fixed distance, then stop automatically. Speed: 20-255. Ticks: encoder co
 | `STOP` | `STOP` | Emergency stop. Brakes all motors, cancels any operation. **Always safe to send in any state.** | `DONE` |
 | `READ` | `READ` | Read all 4 encoder values. Works in any state without interrupting. | Four int32 values, one per line |
 | `VEL` | `VEL,vx,vy,wz` | Continuous velocity (see [Velocity Mode](#velocity-mode)) | `OK` (first time), then `ODOM,...` at 20Hz |
-| `CALIB` | `CALIB` | Run motor calibration (~10 sec) | `CALIB,...` progress, then `DONE` |
+| `CALIB` | `CALIB` | Run motor calibration (~40 sec): dead-zone + forward + reverse | `CALIB,...` progress, then `DONE` |
 
 ## Diagnostic Commands
 
@@ -71,11 +71,18 @@ Move a fixed distance, then stop automatically. Speed: 20-255. Ticks: encoder co
 | `STALL,FL,pos=xxx` | Which motor stalled and where | During MOVING |
 | `ENC,FL:n,FR:n,RL:n,RR:n,t_us:n` | Encoder telemetry | 1Hz idle, 20Hz moving |
 | `ODOM,vx,vy,wz` | Robot velocity (mm/s, mm/s, mrad/s) | 20Hz in VEL mode |
-| `CALIB,start` | Calibration begun | Start of CALIB |
-| `CALIB,N/3,FL:n,RL:n,RR:n,FR:n` | Session N result (ticks/period) | After each session |
-| `CALIB,done,FL:n,...` | Final max tick rates | Calibration complete |
-| `CALIB,saved` | Data written to EEPROM | After done |
-| `CALIB,loaded,FL:n,...` | Data loaded from EEPROM | At boot |
+| `CALIB,start,phase:deadzone` | Calibration begun, starting dead-zone scan | Start of CALIB |
+| `CALIB,dz,FL:45` | Dead-zone found for motor (PWM value) | During dead-zone phase |
+| `CALIB,phase:forward` | Starting forward speed measurement | After dead-zone |
+| `CALIB,fwd,N/3,FL:n,...` | Forward session N result (ticks/period) | During forward phase |
+| `CALIB,fwd,done,FL:n,...` | Final forward max tick rates | Forward complete |
+| `CALIB,phase:reverse` | Starting reverse speed measurement | After forward |
+| `CALIB,rev,N/3,FL:n,...` | Reverse session N result (ticks/period) | During reverse phase |
+| `CALIB,rev,done,FL:n,...` | Final reverse max tick rates | Reverse complete |
+| `CALIB,saved` | All data written to EEPROM (v2 format) | After all phases |
+| `CALIB,loaded,fwd,FL:n,...` | Forward data loaded from EEPROM | At boot |
+| `CALIB,loaded,rev,FL:n,...` | Reverse data loaded from EEPROM | At boot |
+| `CALIB,loaded,dz,FL:n,...` | Dead-zone data loaded from EEPROM | At boot |
 | `CALIB,aborted` | Calibration stopped by STOP | During CALIB |
 | `Moving: remain=n` | Debug: ticks remaining | 1Hz during position move |
 | `ENC_RESET` | Encoders zeroed | At boot, before new motion, and during TMOTOR/TENC |
@@ -146,7 +153,9 @@ The parser in `serial_cmd.cpp` is designed for minimal RAM usage on the 2KB ATme
 ```
 < (PC sends)     > (Arduino responds)
 
-                  > CALIB,loaded,FL:153,RL:150,RR:155,FR:159
+                  > CALIB,loaded,fwd,FL:153,RL:150,RR:155,FR:159
+                  > CALIB,loaded,rev,FL:150,RL:148,RR:153,FR:157
+                  > CALIB,loaded,dz,FL:45,RL:42,RR:48,FR:44
                   > READY
                   > Robot initialized
                   > ENC,FL:0,FR:0,RL:0,RR:0,t_us:12345       # 1Hz idle telemetry
@@ -176,11 +185,21 @@ The parser in `serial_cmd.cpp` is designed for minimal RAM usage on the 2KB ATme
                   > DONE
 
 < CALIB
-                  > CALIB,start
-                  > CALIB,1/3,FL:120,RL:118,RR:122,FR:125
-                  > CALIB,2/3,FL:121,RL:117,RR:123,FR:124
-                  > CALIB,3/3,FL:120,RL:118,RR:122,FR:125
-                  > CALIB,done,FL:153,RL:150,RR:155,FR:159
+                  > CALIB,start,phase:deadzone
+                  > CALIB,dz,FL:45
+                  > CALIB,dz,RL:42
+                  > CALIB,dz,RR:48
+                  > CALIB,dz,FR:44
+                  > CALIB,phase:forward
+                  > CALIB,fwd,1/3,FL:120,RL:118,RR:122,FR:125
+                  > CALIB,fwd,2/3,FL:121,RL:117,RR:123,FR:124
+                  > CALIB,fwd,3/3,FL:120,RL:118,RR:122,FR:125
+                  > CALIB,fwd,done,FL:153,RL:150,RR:155,FR:159
+                  > CALIB,phase:reverse
+                  > CALIB,rev,1/3,FL:118,RL:116,RR:120,FR:123
+                  > CALIB,rev,2/3,FL:119,RL:115,RR:121,FR:122
+                  > CALIB,rev,3/3,FL:118,RL:116,RR:120,FR:123
+                  > CALIB,rev,done,FL:150,RL:148,RR:153,FR:157
                   > CALIB,saved
                   > DONE
 ```

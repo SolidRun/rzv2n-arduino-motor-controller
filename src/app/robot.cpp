@@ -465,8 +465,8 @@ namespace {
             setState(State::IDLE);
             return;
         }
-        // Safety timeout (3 sessions × (settle+measure+brake) + margin)
-        if (millis() - stateStartTime > 30000UL) {
+        // Safety timeout: dead-zone (~4×6s=24s) + fwd (3×2.8s=8.4s) + rev (8.4s) + margin
+        if (millis() - stateStartTime > 60000UL) {
             Motion::abortCalibration();
             Serial_Cmd::sendError("Calib timeout");
             setState(State::IDLE);
@@ -507,7 +507,9 @@ void init() {
     // Load per-motor calibration from EEPROM
     if (Motion::loadCalibFromEEPROM()) {
         const uint8_t* cal = Motion::getCalMaxTickrate();
-        Serial.print(F("CALIB,loaded,FL:"));
+        const uint8_t* rev = Motion::getCalMaxTickrateRev();
+        const uint8_t* dz  = Motion::getCalDeadZone();
+        Serial.print(F("CALIB,loaded,fwd,FL:"));
         Serial.print(cal[MOTOR_FL]);
         Serial.print(F(",RL:"));
         Serial.print(cal[MOTOR_RL]);
@@ -515,6 +517,22 @@ void init() {
         Serial.print(cal[MOTOR_RR]);
         Serial.print(F(",FR:"));
         Serial.println(cal[MOTOR_FR]);
+        Serial.print(F("CALIB,loaded,rev,FL:"));
+        Serial.print(rev[MOTOR_FL]);
+        Serial.print(F(",RL:"));
+        Serial.print(rev[MOTOR_RL]);
+        Serial.print(F(",RR:"));
+        Serial.print(rev[MOTOR_RR]);
+        Serial.print(F(",FR:"));
+        Serial.println(rev[MOTOR_FR]);
+        Serial.print(F("CALIB,loaded,dz,FL:"));
+        Serial.print(dz[MOTOR_FL]);
+        Serial.print(F(",RL:"));
+        Serial.print(dz[MOTOR_RL]);
+        Serial.print(F(",RR:"));
+        Serial.print(dz[MOTOR_RR]);
+        Serial.print(F(",FR:"));
+        Serial.println(dz[MOTOR_FR]);
     } else {
         Serial.println(F("No calibration in EEPROM, using defaults"));
     }

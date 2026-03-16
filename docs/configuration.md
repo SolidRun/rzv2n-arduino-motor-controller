@@ -55,7 +55,7 @@ All constants are in `src/core/config.h`. Changing a value here automatically pr
 | `VEL_PID_KP` | `1.5` | Proportional gain (PWM per tick/period error) |
 | `VEL_PID_KI` | `0.3` | Integral gain (eliminates steady-state error) |
 | `VEL_PID_IMAX` | `150.0` | Anti-windup integral limit |
-| `MAX_MOTOR_TICKRATE` | `150` | Default max ticks per period (before calibration) |
+| `MAX_MOTOR_TICKRATE` | `146` | Default max ticks per period (before calibration) |
 
 ## Motion Profile
 
@@ -87,13 +87,17 @@ All constants are in `src/core/config.h`. Changing a value here automatically pr
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `CALIB_PWM` | `200` | Reference PWM for measurement |
+| `CALIB_PWM` | `200` | Reference PWM for speed measurement |
 | `CALIB_SETTLE_MS` | `500` | Wait for steady state |
 | `CALIB_MEASURE_MS` | `2000` | Measurement window per session |
 | `CALIB_SESSIONS` | `3` | Number of sessions (averaged) |
-| `CALIB_BRAKE_MS` | `300` | Brake between sessions |
+| `CALIB_BRAKE_MS` | `300` | Brake between sessions/phases |
+| `CALIB_DZ_STEP_MS` | `50` | Time per PWM step during dead-zone scan |
+| `CALIB_DZ_MAX_PWM` | `120` | Max PWM to try for dead-zone (if still stuck = broken motor) |
+| `CALIB_DZ_THRESHOLD` | `3` | Min encoder ticks to count as "moving" |
 | `EEPROM_CALIB_ADDR` | `0` | EEPROM start address |
-| `EEPROM_CALIB_MARKER` | `0xCB` | Validity marker byte |
+| `EEPROM_CALIB_MARKER` | `0xCC` | v2 validity marker (fwd + rev + dead-zone) |
+| `EEPROM_CALIB_MARKER_V1` | `0xCB` | v1 legacy marker (fwd only, backward compatible) |
 
 ## Telemetry Rates
 

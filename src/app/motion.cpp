@@ -25,14 +25,33 @@ namespace {
         MAX_MOTOR_TICKRATE, MAX_MOTOR_TICKRATE,
         MAX_MOTOR_TICKRATE, MAX_MOTOR_TICKRATE
     };
+    uint8_t calMaxTickrateRev[NUM_MOTORS] = {
+        MAX_MOTOR_TICKRATE, MAX_MOTOR_TICKRATE,
+        MAX_MOTOR_TICKRATE, MAX_MOTOR_TICKRATE
+    };
+    uint8_t calDeadZone[NUM_MOTORS] = { 0, 0, 0, 0 };
 
     // Calibration state machine
-    enum class CalState : uint8_t { IDLE, SETTLE, MEASURE, BRAKE };
+    enum class CalState : uint8_t {
+        IDLE,
+        // Dead-zone detection
+        DZ_RAMP,        // Slowly increase PWM until motor moves
+        DZ_BRAKE,       // Brake after dead-zone found for one motor
+        // Forward speed measurement
+        FWD_SETTLE, FWD_MEASURE, FWD_BRAKE,
+        // Reverse speed measurement
+        REV_SETTLE, REV_MEASURE, REV_BRAKE
+    };
     CalState calState = CalState::IDLE;
     uint8_t calSession = 0;
     uint32_t calPhaseStart = 0;
     int32_t calStartTicks[NUM_MOTORS];
     int32_t calSessionTicks[NUM_MOTORS];  // Accumulated ticks across sessions
+
+    // Dead-zone scan state
+    uint8_t dzMotorIdx = 0;           // Which motor we're scanning
+    uint8_t dzCurrentPWM = 0;         // Current ramp PWM
+    int32_t dzPrevTicks[NUM_MOTORS];  // Encoder snapshot for dead-zone detection
 
     MotionTarget target;
     bool velocityMode = false;  // true = PS2 control (no target)
@@ -105,8 +124,9 @@ namespace {
         if (motorPID[i].integral > VEL_PID_IMAX) motorPID[i].integral = VEL_PID_IMAX;
         if (motorPID[i].integral < -VEL_PID_IMAX) motorPID[i].integral = -VEL_PID_IMAX;
 
-        // Feed-forward: PWM estimate using per-motor calibrated max tick rate
-        float ff = (float)targetSpeed * 255.0f / (float)calMaxTickrate[i];
+        // Feed-forward: PWM estimate using direction-aware calibrated max tick rate
+        uint8_t maxTR = (targetRate > 0) ? calMaxTickrate[i] : calMaxTickrateRev[i];
+        float ff = (float)targetSpeed * 255.0f / (float)maxTR;
 
         // PI correction on top of feed-forward
         float correction = VEL_PID_KP * (float)error + VEL_PID_KI * motorPID[i].integral;
@@ -114,6 +134,9 @@ namespace {
         int16_t pwm = (int16_t)(ff + correction);
         if (pwm > 255) pwm = 255;
         if (pwm < 0) pwm = 0;
+
+        // Dead-zone enforcement: if PID wants to output something but below dead-zone, jump up
+        if (pwm > 0 && pwm < calDeadZone[i]) pwm = calDeadZone[i];
 
         // Apply direction from kinematics (sign of targetRate)
         return (targetRate > 0) ? pwm : -pwm;
@@ -362,51 +385,144 @@ MotorSpeeds getSpeeds(Direction dir, int16_t speed) {
 // Motor Calibration
 //==============================================================================
 
+// Helper: compute max tickrate from accumulated session ticks
+static uint8_t computeMaxRate(int32_t totalTicks) {
+    uint16_t totalPeriods = (uint16_t)CALIB_SESSIONS * (CALIB_MEASURE_MS / 20);
+    uint16_t avgRate = (uint16_t)(totalTicks / totalPeriods);
+    uint16_t maxRate = (uint16_t)((uint32_t)avgRate * 255 / CALIB_PWM);
+    if (maxRate > 255) maxRate = 255;
+    if (maxRate < 50) maxRate = 50;
+    return (uint8_t)maxRate;
+}
+
+// Helper: start motors at given PWM (positive or negative for direction)
+static void startMotorsAtPWM(int16_t pwmVal) {
+    int16_t pwm[NUM_MOTORS] = { pwmVal, pwmVal, pwmVal, pwmVal };
+    Motor::setAll(pwm);
+}
+
 void startCalibration() {
-    calState = CalState::SETTLE;
     calSession = 0;
     calPhaseStart = millis();
     for (uint8_t i = 0; i < NUM_MOTORS; i++) {
         calSessionTicks[i] = 0;
+        calDeadZone[i] = 0;
     }
     Encoder::resetAll();
 
-    // Drive all motors forward at reference PWM (bypassing PID)
-    int16_t pwm[NUM_MOTORS] = { CALIB_PWM, CALIB_PWM, CALIB_PWM, CALIB_PWM };
-    Motor::setAll(pwm);
+    // Start with dead-zone detection: motor 0, PWM 0
+    dzMotorIdx = 0;
+    dzCurrentPWM = 0;
 
-    Serial.println(F("CALIB,start"));
+    // Snapshot encoder positions
+    Encoder::Snapshot snap;
+    Encoder::getSnapshot(snap);
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+        dzPrevTicks[i] = snap.ticks[i];
+    }
+
+    // Start first motor at PWM 1
+    dzCurrentPWM = 1;
+    Motor::setDirect(dzMotorIdx, dzCurrentPWM);
+    calState = CalState::DZ_RAMP;
+
+    Serial.println(F("CALIB,start,phase:deadzone"));
 }
 
 CalResult updateCalibration() {
     if (calState == CalState::IDLE) return CalResult::DONE;
 
+    static const char* mnames[] = {"FL", "RL", "RR", "FR"};
     uint32_t now = millis();
     uint32_t elapsed = now - calPhaseStart;
 
-    if (calState == CalState::SETTLE) {
-        // Wait for motors to reach steady state
-        if (elapsed >= CALIB_SETTLE_MS) {
-            // Record starting positions for measurement
+    //--- Dead-zone detection: ramp one motor at a time ---
+    if (calState == CalState::DZ_RAMP) {
+        if (elapsed >= CALIB_DZ_STEP_MS) {
+            calPhaseStart = now;
+
+            // Check if motor started moving
             Encoder::Snapshot snap;
             Encoder::getSnapshot(snap);
-            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-                calStartTicks[i] = snap.ticks[i];
+            int32_t delta = abs(snap.ticks[dzMotorIdx] - dzPrevTicks[dzMotorIdx]);
+            dzPrevTicks[dzMotorIdx] = snap.ticks[dzMotorIdx];
+
+            if (delta >= CALIB_DZ_THRESHOLD) {
+                // Motor started moving — record dead-zone
+                calDeadZone[dzMotorIdx] = dzCurrentPWM;
+                Serial.print(F("CALIB,dz,"));
+                Serial.print(mnames[dzMotorIdx]);
+                Serial.print(':');
+                Serial.println(dzCurrentPWM);
+
+                // Stop this motor, move to next
+                Motor::setDirect(dzMotorIdx, 0);
+                Motor::brakeAll();
+                calState = CalState::DZ_BRAKE;
+                calPhaseStart = now;
+            } else {
+                // Increase PWM
+                dzCurrentPWM++;
+                if (dzCurrentPWM > CALIB_DZ_MAX_PWM) {
+                    // Motor never moved — broken or very high friction
+                    calDeadZone[dzMotorIdx] = CALIB_DZ_MAX_PWM;
+                    Serial.print(F("CALIB,dz,"));
+                    Serial.print(mnames[dzMotorIdx]);
+                    Serial.print(F(":MAX!"));
+                    Serial.println();
+
+                    Motor::setDirect(dzMotorIdx, 0);
+                    Motor::brakeAll();
+                    calState = CalState::DZ_BRAKE;
+                    calPhaseStart = now;
+                } else {
+                    Motor::setDirect(dzMotorIdx, dzCurrentPWM);
+                }
             }
-            calState = CalState::MEASURE;
+        }
+    }
+    else if (calState == CalState::DZ_BRAKE) {
+        if (elapsed >= CALIB_BRAKE_MS) {
+            dzMotorIdx++;
+            if (dzMotorIdx >= NUM_MOTORS) {
+                // Dead-zone done for all motors — start forward speed measurement
+                Serial.println(F("CALIB,phase:forward"));
+                calSession = 0;
+                for (uint8_t i = 0; i < NUM_MOTORS; i++) calSessionTicks[i] = 0;
+                Encoder::resetAll();
+                startMotorsAtPWM(CALIB_PWM);
+                calState = CalState::FWD_SETTLE;
+                calPhaseStart = now;
+            } else {
+                // Next motor dead-zone scan
+                Encoder::Snapshot snap;
+                Encoder::getSnapshot(snap);
+                for (uint8_t i = 0; i < NUM_MOTORS; i++) dzPrevTicks[i] = snap.ticks[i];
+                dzCurrentPWM = 1;
+                Motor::setDirect(dzMotorIdx, dzCurrentPWM);
+                calState = CalState::DZ_RAMP;
+                calPhaseStart = now;
+            }
+        }
+    }
+
+    //--- Forward speed measurement (3 sessions) ---
+    else if (calState == CalState::FWD_SETTLE) {
+        if (elapsed >= CALIB_SETTLE_MS) {
+            Encoder::Snapshot snap;
+            Encoder::getSnapshot(snap);
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) calStartTicks[i] = snap.ticks[i];
+            calState = CalState::FWD_MEASURE;
             calPhaseStart = now;
         }
     }
-    else if (calState == CalState::MEASURE) {
+    else if (calState == CalState::FWD_MEASURE) {
         if (elapsed >= CALIB_MEASURE_MS) {
-            // Record ticks measured in this session
             Encoder::Snapshot snap;
             Encoder::getSnapshot(snap);
-
-            static const char* mnames[] = {"FL", "RL", "RR", "FR"};
             calSession++;
 
-            Serial.print(F("CALIB,"));
+            Serial.print(F("CALIB,fwd,"));
             Serial.print(calSession);
             Serial.print('/');
             Serial.print(CALIB_SESSIONS);
@@ -417,33 +533,22 @@ CalResult updateCalibration() {
                 Serial.print(',');
                 Serial.print(mnames[i]);
                 Serial.print(':');
-                // Ticks per 20ms period = delta / (CALIB_MEASURE_MS / 20)
                 Serial.print((int16_t)(delta / (CALIB_MEASURE_MS / 20)));
             }
             Serial.println();
 
-            // Brake between sessions
             Motor::brakeAll();
-            calState = CalState::BRAKE;
+            calState = CalState::FWD_BRAKE;
             calPhaseStart = now;
         }
     }
-    else if (calState == CalState::BRAKE) {
+    else if (calState == CalState::FWD_BRAKE) {
         if (elapsed >= CALIB_BRAKE_MS) {
             if (calSession >= CALIB_SESSIONS) {
-                // All sessions complete — compute per-motor max tick rate
-                static const char* mnames[] = {"FL", "RL", "RR", "FR"};
-                uint16_t totalPeriods = (uint16_t)CALIB_SESSIONS * (CALIB_MEASURE_MS / 20);
-
-                Serial.print(F("CALIB,done"));
+                // Forward done — compute and report
+                Serial.print(F("CALIB,fwd,done"));
                 for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-                    // Average ticks/period at CALIB_PWM, extrapolate to PWM=255
-                    uint16_t avgRate = (uint16_t)(calSessionTicks[i] / totalPeriods);
-                    uint16_t maxRate = (uint16_t)((uint32_t)avgRate * 255 / CALIB_PWM);
-                    calMaxTickrate[i] = (maxRate > 255) ? 255 : (uint8_t)maxRate;
-                    // Sanity: clamp to reasonable range
-                    if (calMaxTickrate[i] < 50) calMaxTickrate[i] = 50;
-
+                    calMaxTickrate[i] = computeMaxRate(calSessionTicks[i]);
                     Serial.print(',');
                     Serial.print(mnames[i]);
                     Serial.print(':');
@@ -451,17 +556,82 @@ CalResult updateCalibration() {
                 }
                 Serial.println();
 
+                // Start reverse measurement
+                Serial.println(F("CALIB,phase:reverse"));
+                calSession = 0;
+                for (uint8_t i = 0; i < NUM_MOTORS; i++) calSessionTicks[i] = 0;
+                Encoder::resetAll();
+                startMotorsAtPWM(-CALIB_PWM);
+                calState = CalState::REV_SETTLE;
+                calPhaseStart = now;
+            } else {
+                Encoder::resetAll();
+                startMotorsAtPWM(CALIB_PWM);
+                calState = CalState::FWD_SETTLE;
+                calPhaseStart = now;
+            }
+        }
+    }
+
+    //--- Reverse speed measurement (3 sessions) ---
+    else if (calState == CalState::REV_SETTLE) {
+        if (elapsed >= CALIB_SETTLE_MS) {
+            Encoder::Snapshot snap;
+            Encoder::getSnapshot(snap);
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) calStartTicks[i] = snap.ticks[i];
+            calState = CalState::REV_MEASURE;
+            calPhaseStart = now;
+        }
+    }
+    else if (calState == CalState::REV_MEASURE) {
+        if (elapsed >= CALIB_MEASURE_MS) {
+            Encoder::Snapshot snap;
+            Encoder::getSnapshot(snap);
+            calSession++;
+
+            Serial.print(F("CALIB,rev,"));
+            Serial.print(calSession);
+            Serial.print('/');
+            Serial.print(CALIB_SESSIONS);
+
+            for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                int32_t delta = abs(snap.ticks[i] - calStartTicks[i]);
+                calSessionTicks[i] += delta;
+                Serial.print(',');
+                Serial.print(mnames[i]);
+                Serial.print(':');
+                Serial.print((int16_t)(delta / (CALIB_MEASURE_MS / 20)));
+            }
+            Serial.println();
+
+            Motor::brakeAll();
+            calState = CalState::REV_BRAKE;
+            calPhaseStart = now;
+        }
+    }
+    else if (calState == CalState::REV_BRAKE) {
+        if (elapsed >= CALIB_BRAKE_MS) {
+            if (calSession >= CALIB_SESSIONS) {
+                // Reverse done — compute and report
+                Serial.print(F("CALIB,rev,done"));
+                for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+                    calMaxTickrateRev[i] = computeMaxRate(calSessionTicks[i]);
+                    Serial.print(',');
+                    Serial.print(mnames[i]);
+                    Serial.print(':');
+                    Serial.print(calMaxTickrateRev[i]);
+                }
+                Serial.println();
+
+                // All phases complete
                 saveCalibToEEPROM();
                 Serial.println(F("CALIB,saved"));
-
                 calState = CalState::IDLE;
                 return CalResult::DONE;
             } else {
-                // Start next session
                 Encoder::resetAll();
-                int16_t pwm[NUM_MOTORS] = { CALIB_PWM, CALIB_PWM, CALIB_PWM, CALIB_PWM };
-                Motor::setAll(pwm);
-                calState = CalState::SETTLE;
+                startMotorsAtPWM(-CALIB_PWM);
+                calState = CalState::REV_SETTLE;
                 calPhaseStart = now;
             }
         }
@@ -486,21 +656,55 @@ const uint8_t* getCalMaxTickrate() {
     return calMaxTickrate;
 }
 
+const uint8_t* getCalMaxTickrateRev() {
+    return calMaxTickrateRev;
+}
+
+const uint8_t* getCalDeadZone() {
+    return calDeadZone;
+}
+
 bool loadCalibFromEEPROM() {
-    if (EEPROM.read(EEPROM_CALIB_ADDR) != EEPROM_CALIB_MARKER) {
-        return false;
+    uint8_t marker = EEPROM.read(EEPROM_CALIB_ADDR);
+
+    if (marker == EEPROM_CALIB_MARKER) {
+        // v2 format: forward + reverse + dead-zone
+        for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+            calMaxTickrate[i] = EEPROM.read(EEPROM_CALIB_ADDR + 1 + i);
+            if (calMaxTickrate[i] < 50) calMaxTickrate[i] = MAX_MOTOR_TICKRATE;
+        }
+        for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+            calMaxTickrateRev[i] = EEPROM.read(EEPROM_CALIB_ADDR + 5 + i);
+            if (calMaxTickrateRev[i] < 50) calMaxTickrateRev[i] = MAX_MOTOR_TICKRATE;
+        }
+        for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+            calDeadZone[i] = EEPROM.read(EEPROM_CALIB_ADDR + 9 + i);
+        }
+        return true;
     }
-    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-        calMaxTickrate[i] = EEPROM.read(EEPROM_CALIB_ADDR + 1 + i);
-        if (calMaxTickrate[i] < 50) calMaxTickrate[i] = MAX_MOTOR_TICKRATE;
+    else if (marker == EEPROM_CALIB_MARKER_V1) {
+        // v1 format: forward only — load and use for both directions
+        for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+            calMaxTickrate[i] = EEPROM.read(EEPROM_CALIB_ADDR + 1 + i);
+            if (calMaxTickrate[i] < 50) calMaxTickrate[i] = MAX_MOTOR_TICKRATE;
+            calMaxTickrateRev[i] = calMaxTickrate[i];
+        }
+        return true;
     }
-    return true;
+
+    return false;
 }
 
 void saveCalibToEEPROM() {
     EEPROM.update(EEPROM_CALIB_ADDR, EEPROM_CALIB_MARKER);
     for (uint8_t i = 0; i < NUM_MOTORS; i++) {
         EEPROM.update(EEPROM_CALIB_ADDR + 1 + i, calMaxTickrate[i]);
+    }
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+        EEPROM.update(EEPROM_CALIB_ADDR + 5 + i, calMaxTickrateRev[i]);
+    }
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+        EEPROM.update(EEPROM_CALIB_ADDR + 9 + i, calDeadZone[i]);
     }
 }
 

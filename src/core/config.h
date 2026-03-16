@@ -141,7 +141,7 @@
 // Maximum encoder ticks per control period (20ms) at full PWM (255), no load.
 // Motor: 9600 RPM shaft, 90:1 gear → 106.7 RPM output
 // 106.7/60 * 4320 CPR = 7680 ticks/s → 7680/50Hz = ~154 ticks/period
-#define MAX_MOTOR_TICKRATE      150
+#define MAX_MOTOR_TICKRATE      146
 
 // Brake timing
 #define BRAKE_HOLD_MS           40
@@ -154,9 +154,19 @@
 #define CALIB_SESSIONS          3       // Number of measurement sessions (averaged)
 #define CALIB_BRAKE_MS          300     // Brake between sessions
 
-// EEPROM layout for calibration data
+// Dead-zone detection: ramp PWM from 0 until encoder moves
+#define CALIB_DZ_STEP_MS        50      // Time per PWM step during dead-zone scan
+#define CALIB_DZ_MAX_PWM        120     // Max PWM to try (if still stuck, motor is broken)
+#define CALIB_DZ_THRESHOLD      3       // Min encoder ticks to count as "moving"
+
+// EEPROM layout for calibration data (v2: 13 bytes)
+// [0]     = marker (0xCC for v2, 0xCB for v1)
+// [1..4]  = forward max tickrate per motor (FL, RL, RR, FR)
+// [5..8]  = reverse max tickrate per motor (FL, RL, RR, FR)
+// [9..12] = dead-zone PWM per motor (FL, RL, RR, FR)
 #define EEPROM_CALIB_ADDR       0       // Start address
-#define EEPROM_CALIB_MARKER     0xCB    // Validity marker byte
+#define EEPROM_CALIB_MARKER_V1  0xCB    // v1 marker (forward only)
+#define EEPROM_CALIB_MARKER     0xCC    // v2 marker (forward + reverse + dead-zone)
 
 // Timeouts
 #define MOVE_TIMEOUT_MS         30000   // Max time for any movement

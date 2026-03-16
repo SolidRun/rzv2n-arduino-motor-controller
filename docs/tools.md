@@ -4,14 +4,35 @@
 
 A full-featured graphical interface for controlling the robot over USB serial.
 
-### Features
+### Layout
 
-- **Connection panel** — auto-detects Arduino ports (by USB VID/description), connect/disconnect button, port refresh
-- **Position control** — speed spinner (20-255), ticks spinner (50-50000) with quick buttons (500/1000/2000/5000), 3x3 directional pad (FL/FWD/FR/LEFT/STOP/RIGHT/BL/BWD/BR), CCW/CW rotation buttons, Read Encoders button
-- **Velocity control** — vx/vy/wz sliders (-255 to 255), Start/Stop VEL buttons, sends `VEL` commands at 10Hz when active, double-click slider to zero
-- **Diagnostics** — motor selector (FL/FR/RL/RR), PWM slider (-255 to 255), Run Motor / Test Encoders / Calibrate / Stop Test buttons
-- **Telemetry dashboard** — live encoder values (FL/FR/RL/RR) and odometry (vx/vy/wz mm/s and mrad/s), updated from serial telemetry
-- **Serial monitor** — dark-themed console with color-coded messages (blue=TX, green=RX, bold green=OK/DONE, red=ERROR), timestamp prefixes, manual command entry, auto-scroll and telemetry filter toggles
+```
+┌─ Connection ──────────────────────────────────────────────┐
+│  Port: [▼]  [Refresh]  [Connect]   Status   State        │
+├─ Live Telemetry (always visible) ─────────────────────────┤
+│  ENC  FL: ---  FR: ---  RL: ---  RR: ---  │  ODOM  vx: --- vy: --- wz: --- │
+├───────────────────────────────────────────────────────────┤
+│ [ Position ] [ Velocity ] [ Motor Test ] [ Smart Calibration ] │
+│                                                           │
+│  (selected tab content)                                   │
+│                                                           │
+├─ Serial Monitor (always visible) ─────────────────────────┤
+│  12:34:56 -> FWD,100,1000                                 │
+│  12:34:56 <- OK                                           │
+└───────────────────────────────────────────────────────────┘
+```
+
+### Tabs
+
+- **Position** — speed and ticks number fields, 3x3 directional grid, CCW/CW rotation, Read Encoders
+- **Velocity** — vx/vy/wz number fields (-255 to 255), Start/Stop buttons, streams VEL commands at 10Hz
+- **Motor Test** — motor selector (FL/FR/RL/RR), PWM number field, Run Motor, Test Encoders, Quick/Smart Calibrate
+- **Smart Calibration** — full motor calibration (dead-zone + fwd/rev speed), ticks-per-mm measurement with quick-test presets and results table, export JSON / update config.h
+
+### Always Visible
+
+- **Live Telemetry** — compact bar showing encoder ticks (FL/FR/RL/RR) and odometry (vx/vy/wz) from serial data, updates in real-time regardless of which tab is selected
+- **Serial Monitor** — dark-themed console with color-coded messages (blue=TX, green=RX, bold green=OK/DONE, red=ERROR), timestamp prefixes, manual command entry, auto-scroll and telemetry filter toggles
 
 ### Keyboard Shortcuts
 
@@ -28,8 +49,8 @@ A full-featured graphical interface for controlling the robot over USB serial.
 
 ```bash
 cd tools/
-./install.sh          # Install system deps (tkinter, venv) + pyserial
-python3 run.py        # Launch GUI (checks venv exists)
+python3 install.py       # Create venv + install pyserial (cross-platform)
+python3 run.py           # Launch GUI (checks venv exists)
 
 # Or directly:
 ./venv/bin/python robot_test.py

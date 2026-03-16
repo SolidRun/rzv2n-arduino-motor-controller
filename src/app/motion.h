@@ -146,6 +146,16 @@ bool isCalibrating();
 const uint8_t* getCalMaxTickrate();
 
 /**
+ * @brief Get per-motor reverse max tick rate
+ */
+const uint8_t* getCalMaxTickrateRev();
+
+/**
+ * @brief Get per-motor dead-zone PWM (minimum PWM to start moving)
+ */
+const uint8_t* getCalDeadZone();
+
+/**
  * @brief Load calibration data from EEPROM
  * @return true if valid data found
  */

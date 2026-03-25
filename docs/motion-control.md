@@ -62,26 +62,34 @@ For DIAG_FL: activeMask = 0b1010 = 0x0A (RL and FR), activeCount = 2.
 
 ### Inverse Kinematics (VEL Command)
 
-Standard mecanum formula to compute per-motor speeds from desired robot velocity:
+The VEL command accepts real-world units — the same as ODOM output:
 
 ```
-FL = vx - vy - wz
-FR = vx + vy + wz
-RL = vx + vy - wz
-RR = vx - vy + wz
+Input:  VEL,vx_mm,vy_mm,wz_mrad
+  vx_mm   = forward velocity in mm/s   (positive = forward)
+  vy_mm   = lateral velocity in mm/s   (positive = left strafe)
+  wz_mrad = angular velocity in mrad/s (positive = counter-clockwise)
 
-Where:
-  vx = forward velocity     (-255 to +255, positive = forward)
-  vy = lateral velocity     (-255 to +255, positive = left strafe)
-  wz = rotational velocity  (-255 to +255, positive = counter-clockwise)
+Per-wheel velocity in mm/s (standard mecanum IK):
+  wz_mm = MECANUM_LX_LY_MM × wz_mrad / 1000     (angular → linear at wheel)
+  FL = vx - vy - wz_mm
+  FR = vx + vy + wz_mm
+  RL = vx + vy - wz_mm
+  RR = vx - vy + wz_mm
+
+  Where MECANUM_LX_LY_MM = (WHEEL_BASE + TRACK_WIDTH) / 2 = 200mm
+
+Convert to PID tick-rate targets (ticks per 20ms control period):
+  tickRate[i] = wheel_mm[i] × MM_S_TO_TICK_RATE
+  MM_S_TO_TICK_RATE = ENCODER_CPR / (π × WHEEL_DIAMETER × CONTROL_FREQ)
+                    = 4320 / (3.14159 × 80 × 50) ≈ 0.3438
 ```
 
-If any computed motor speed exceeds 255, all 4 are scaled down proportionally to keep the ratio.
+If a requested velocity exceeds motor capability, the PID saturates at max PWM — the robot goes as fast as it physically can. No artificial normalization.
 
-**Example:** `VEL,200,200,0` (forward + left strafe):
-- FL = 0, FR = 400, RL = 400, RR = 0
-- maxAbs = 400, scale = 255/400 = 0.6375
-- Result: FL=0, FR=255, RL=255, RR=0 (diagonal forward-left at max speed)
+**Example:** `VEL,200,0,0` (forward at 200 mm/s):
+- All wheels: 200 mm/s × 0.3438 ≈ 69 ticks/period
+- PID tracks 69 ticks/period per motor using encoder feedback
 
 ### Forward Kinematics (Odometry)
 
@@ -180,34 +188,35 @@ The inner PI controller (feed-forward + proportional + integral) is identical in
 
 ### Numerical Example
 
-Motor FL, calibrated maxTickrate = 153 ticks/period. Target speed from kinematics = 100 (PWM scale).
+Motor FL, calibrated maxTickrate = 153 ticks/period. VEL command requests 200 mm/s forward.
+From IK: tickRate = 200 × 0.3438 ≈ 69 ticks/period (set directly as velSetpoint).
 
 **Tick 1:** Motor just started. actualSpeed = 0.
 ```
-targetRate = 100 x 153 / 255 = 60 ticks/period
-error = 60 - 0 = 60
-integral = 60 (clamped to 150 max)
-FF = 60 x 255 / 153 = 100
-correction = 1.5 x 60 + 0.3 x 60 = 90 + 18 = 108
-pwm = 100 + 108 = 208 -> motor gets strong initial kick
+targetRate = 69 ticks/period (from IK, no PWM conversion needed)
+error = 69 - 0 = 69
+integral = 69 (clamped to 150 max)
+FF = 69 x 255 / 153 = 115
+correction = 1.5 x 69 + 0.3 x 69 = 103.5 + 20.7 = 124.2
+pwm = 115 + 124 = 239 -> motor gets strong initial kick
 ```
 
-**Tick 5:** Motor is spinning, actualSpeed = 55.
+**Tick 5:** Motor is spinning, actualSpeed = 64.
 ```
-error = 60 - 55 = 5
-integral = 60 + 5 = 65 (accumulated)
-FF = 100
-correction = 1.5 x 5 + 0.3 x 65 = 7.5 + 19.5 = 27
-pwm = 100 + 27 = 127 -> getting closer to target
+error = 69 - 64 = 5
+integral = 69 + 5 = 74 (accumulated)
+FF = 115
+correction = 1.5 x 5 + 0.3 x 74 = 7.5 + 22.2 = 29.7
+pwm = 115 + 30 = 145 -> getting closer to target
 ```
 
-**Tick 10:** Motor at steady state, actualSpeed = 60.
+**Tick 10:** Motor at steady state, actualSpeed = 69.
 ```
-error = 60 - 60 = 0
-integral = 65 + 0 = 65 (no change)
-FF = 100
-correction = 1.5 x 0 + 0.3 x 65 = 0 + 19.5 = 19.5
-pwm = 100 + 19.5 ~ 120 -> stable output, integral provides offset
+error = 69 - 69 = 0
+integral = 74 + 0 = 74 (no change)
+FF = 115
+correction = 1.5 x 0 + 0.3 x 74 = 0 + 22.2 = 22.2
+pwm = 115 + 22 ~ 137 -> stable output, integral provides offset
 ```
 
 ### Why Feed-Forward + PI (Not Just PID)?

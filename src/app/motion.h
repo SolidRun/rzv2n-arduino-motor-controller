@@ -43,13 +43,22 @@ void setTarget(Direction dir, int16_t speed, int32_t ticks);
 void setVelocity(Direction dir, int16_t speed);
 
 /**
- * @brief Set per-motor velocity targets (PID-controlled)
+ * @brief Set per-motor velocity targets (PID-controlled, PWM-scale)
  * @param speeds Array of 4 motor speeds (-255 to 255, PWM-scale)
  *
- * Used for VEL command (vx/vy/wz inverse kinematics).
+ * Used for PS2/direction-based velocity control.
  * Speeds are converted to tick-rate targets and tracked by per-motor PID.
  */
 void setMotorVelocities(const int16_t speeds[NUM_MOTORS]);
+
+/**
+ * @brief Set per-motor tick-rate targets directly (PID-controlled)
+ * @param tickRates Array of 4 tick-rate targets (ticks/control-period)
+ *
+ * Used for VEL command — receives output of computeFromVelocity() directly.
+ * No PWM-to-tickrate conversion; values are used as velSetpoint as-is.
+ */
+void setMotorTickRates(const int16_t tickRates[NUM_MOTORS]);
 
 /**
  * @brief Stop all motion immediately

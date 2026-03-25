@@ -252,9 +252,9 @@ namespace {
                 return true;
 
             case CmdType::VELOCITY: {
-                int16_t motorSpeeds[NUM_MOTORS];
-                Mecanum::computeFromVelocity(cmd.vx, cmd.vy, cmd.wz, motorSpeeds);
-                Motion::setMotorVelocities(motorSpeeds);
+                int16_t tickRates[NUM_MOTORS];
+                Mecanum::computeFromVelocity(cmd.vx, cmd.vy, cmd.wz, tickRates);
+                Motion::setMotorTickRates(tickRates);
                 watchdogEnabled = true;
 
                 if (!velocityActive) {

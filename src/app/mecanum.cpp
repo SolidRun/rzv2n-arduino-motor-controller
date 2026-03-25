@@ -141,25 +141,24 @@ int16_t calcSlowdown(int16_t baseSpeed, int32_t remainingTicks) {
     return newSpeed;
 }
 
-void computeFromVelocity(int16_t vx, int16_t vy, int16_t wz,
+void computeFromVelocity(int16_t vx_mm, int16_t vy_mm, int16_t wz_mrad,
                          int16_t out[NUM_MOTORS]) {
-    // Standard mecanum inverse kinematics
-    // vx = forward, vy = left strafe, wz = counter-clockwise rotation
-    out[MOTOR_FL] = vx - vy - wz;
-    out[MOTOR_FR] = vx + vy + wz;
-    out[MOTOR_RL] = vx + vy - wz;
-    out[MOTOR_RR] = vx - vy + wz;
+    // Mecanum inverse kinematics with real-world units (same as ODOM output).
+    // Converts robot velocity (mm/s, mrad/s) → per-wheel tick-rate (ticks/period).
 
-    // Normalize: if any motor exceeds 255, scale all down proportionally
-    int16_t maxAbs = 0;
+    // Angular velocity contribution at the wheel contact point (mm/s)
+    float wz_mm = (float)MECANUM_LX_LY_MM * (float)wz_mrad / 1000.0f;
+
+    // Per-wheel velocity in mm/s (standard mecanum IK)
+    float wheel[NUM_MOTORS];
+    wheel[MOTOR_FL] = (float)vx_mm - (float)vy_mm - wz_mm;
+    wheel[MOTOR_FR] = (float)vx_mm + (float)vy_mm + wz_mm;
+    wheel[MOTOR_RL] = (float)vx_mm + (float)vy_mm - wz_mm;
+    wheel[MOTOR_RR] = (float)vx_mm - (float)vy_mm + wz_mm;
+
+    // Convert mm/s → ticks per control period
     for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-        int16_t a = abs(out[i]);
-        if (a > maxAbs) maxAbs = a;
-    }
-    if (maxAbs > 255) {
-        for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-            out[i] = (int16_t)((int32_t)out[i] * 255 / maxAbs);
-        }
+        out[i] = (int16_t)(wheel[i] * MM_S_TO_TICK_RATE);
     }
 }
 

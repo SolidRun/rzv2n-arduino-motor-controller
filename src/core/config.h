@@ -106,6 +106,13 @@
 #define WHEEL_BASE_MM           190     // Front-to-rear axle distance
 #define TRACK_WIDTH_MM          210     // Left-to-right wheel distance
 
+// Derived kinematic constants (used by mecanum IK and FK)
+// lx + ly = (wheelbase + track) / 2  — lever arm for angular velocity
+#define MECANUM_LX_LY_MM       ((WHEEL_BASE_MM + TRACK_WIDTH_MM) / 2)  // 200mm
+// mm/s → ticks/period: ENCODER_CPR / (π × WHEEL_DIAMETER_MM × CONTROL_FREQ_HZ)
+// Inverse of the K constant used in forwardKinematics.
+#define MM_S_TO_TICK_RATE      ((float)ENCODER_CPR / (3.14159f * WHEEL_DIAMETER_MM * CONTROL_FREQ_HZ))
+
 //==============================================================================
 // Control Loop
 //==============================================================================

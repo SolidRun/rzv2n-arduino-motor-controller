@@ -59,13 +59,15 @@ int16_t calcAccelRamp(int16_t baseSpeed, int32_t currentPos);
 int16_t calcSlowdown(int16_t baseSpeed, int32_t remainingTicks);
 
 /**
- * @brief Compute motor speeds from velocity components (inverse kinematics)
- * @param vx Forward velocity (-255 to 255)
- * @param vy Lateral velocity (-255 to 255, positive = left)
- * @param wz Rotational velocity (-255 to 255, positive = CCW)
- * @param out Output array of 4 motor speeds
+ * @brief Inverse kinematics: robot velocity → per-motor tick-rate targets
+ * @param vx_mm   Forward velocity in mm/s (positive = forward)
+ * @param vy_mm   Lateral velocity in mm/s (positive = left strafe)
+ * @param wz_mrad Angular velocity in mrad/s (positive = CCW)
+ * @param out     Output: per-motor tick-rate targets (ticks/control-period)
+ *
+ * Same units as ODOM output — symmetric input/output protocol.
  */
-void computeFromVelocity(int16_t vx, int16_t vy, int16_t wz,
+void computeFromVelocity(int16_t vx_mm, int16_t vy_mm, int16_t wz_mrad,
                          int16_t out[NUM_MOTORS]);
 
 /**

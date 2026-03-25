@@ -348,16 +348,16 @@ class RobotGUI:
         self.vel_vy_var = tk.IntVar(value=0)
         self.vel_wz_var = tk.IntVar(value=0)
 
-        for i, (name, var, desc) in enumerate([
-            ("vx", self.vel_vx_var, "Forward/Back"),
-            ("vy", self.vel_vy_var, "Left/Right"),
-            ("wz", self.vel_wz_var, "CCW/CW"),
+        for i, (name, var, desc, unit, rng) in enumerate([
+            ("vx", self.vel_vx_var, "Forward/Back", "mm/s", "(-500..500)"),
+            ("vy", self.vel_vy_var, "Left/Right", "mm/s", "(-500..500)"),
+            ("wz", self.vel_wz_var, "CCW/CW", "mrad/s", "(-2500..2500)"),
         ]):
             col = i * 4
             ttk.Label(vals, text=f"{name}:", style='MonoBold.TLabel').grid(row=0, column=col, sticky='e')
             ttk.Entry(vals, textvariable=var, width=6, font=('Consolas', 11),
                       justify='center').grid(row=0, column=col+1, padx=(4, 2))
-            ttk.Label(vals, text=f"(-255..255)", style='Gray.TLabel',
+            ttk.Label(vals, text=f"{rng} {unit}", style='Gray.TLabel',
                       font=('Segoe UI', 8)).grid(row=1, column=col+1, sticky='n')
             ttk.Label(vals, text=desc, style='Gray.TLabel').grid(row=0, column=col+2, padx=(2, 20))
 

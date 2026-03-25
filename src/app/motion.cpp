@@ -215,15 +215,23 @@ void setVelocity(Direction dir, int16_t speed) {
 }
 
 void setMotorVelocities(const int16_t speeds[NUM_MOTORS]) {
+    // Convert PWM-scale speeds to tick-rate targets, then delegate
+    int16_t tickRates[NUM_MOTORS];
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+        tickRates[i] = (int16_t)((int32_t)speeds[i] * calMaxTickrate[i] / 255);
+    }
+    setMotorTickRates(tickRates);
+}
+
+void setMotorTickRates(const int16_t tickRates[NUM_MOTORS]) {
     bool wasVelocityMode = velocityMode;
 
     target.active = true;
     target.ticks = 0;
     velocityMode = true;
 
-    // Convert PWM-scale speeds to tick-rate targets
     for (uint8_t i = 0; i < NUM_MOTORS; i++) {
-        velSetpoint[i] = (int16_t)((int32_t)speeds[i] * calMaxTickrate[i] / 255);
+        velSetpoint[i] = tickRates[i];
     }
 
     // On first VEL command (mode transition), reset PID to avoid stale state

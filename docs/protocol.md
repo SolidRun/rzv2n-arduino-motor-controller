@@ -99,15 +99,17 @@ Move a fixed distance, then stop automatically. Speed: 20-255. Ticks: encoder co
 
 | Parameter | Range | Meaning | Unit |
 |-----------|-------|---------|------|
-| vx | -255 to 255 | Forward (+) / Backward (-) | PWM scale |
-| vy | -255 to 255 | Left strafe (+) / Right strafe (-) | PWM scale |
-| wz | -255 to 255 | Counter-clockwise (+) / Clockwise (-) | PWM scale |
+| vx | -500 to 500 | Forward (+) / Backward (-) | mm/s |
+| vy | -500 to 500 | Left strafe (+) / Right strafe (-) | mm/s |
+| wz | -2500 to 2500 | Counter-clockwise (+) / Clockwise (-) | mrad/s |
+
+> **Same units as ODOM output** — input and output use identical units (mm/s, mrad/s), so a ROS2 node can directly feed velocity commands without unit conversion. Max linear speed is ~436 mm/s, max angular speed is ~2180 mrad/s (hardware-limited by motor max RPM).
 
 ### Internal Processing
 
-1. `VEL,vx,vy,wz` is parsed by `serial_cmd.cpp`
-2. `robot.cpp` calls `Mecanum::computeFromVelocity(vx, vy, wz, motorSpeeds)` — this computes per-motor speeds using the standard mecanum formula with normalization
-3. `Motion::setMotorVelocities(motorSpeeds)` converts PWM-scale speeds to tick-rate targets: `velSetpoint[i] = speeds[i] x calMaxTickrate[i] / 255`
+1. `VEL,vx,vy,wz` is parsed by `serial_cmd.cpp` (values are mm/s, mm/s, mrad/s)
+2. `robot.cpp` calls `Mecanum::computeFromVelocity(vx, vy, wz, tickRates)` — mecanum IK converts robot velocity to per-wheel tick-rate targets (ticks/control-period) using wheel geometry and encoder CPR
+3. `Motion::setMotorTickRates(tickRates)` sets `velSetpoint[i]` directly (no PWM conversion needed)
 4. Every 20ms, `Motion::update()` runs the PID for each motor against its `velSetpoint`
 5. Every 50ms, `robot.cpp` computes encoder deltas -> forward kinematics -> sends `ODOM,vx_mm,vy_mm,wz_mrad`
 
@@ -125,11 +127,11 @@ Move a fixed distance, then stop automatically. Speed: 20-255. Ticks: encoder co
 ### Examples
 
 ```bash
-VEL,100,0,0      # Go forward at speed 100
-VEL,0,80,0       # Strafe left at speed 80
-VEL,0,0,50       # Rotate counter-clockwise at speed 50
-VEL,100,50,0     # Forward + left strafe = diagonal
-VEL,80,0,30      # Forward while turning = arc
+VEL,200,0,0      # Go forward at 200 mm/s
+VEL,0,150,0      # Strafe left at 150 mm/s
+VEL,0,0,500      # Rotate counter-clockwise at 500 mrad/s (~28.6 deg/s)
+VEL,200,100,0    # Forward + left strafe = diagonal
+VEL,150,0,300    # Forward while turning = arc
 VEL,0,0,0        # Stop (but watchdog timer still running — better to use STOP)
 STOP              # Full stop, exit VEL mode, disable watchdog
 ```
@@ -169,12 +171,12 @@ The parser in `serial_cmd.cpp` is designed for minimal RAM usage on the 2KB ATme
                   > ...
                   > DONE                                         # Target reached
 
-< VEL,100,0,0
+< VEL,200,0,0
                   > OK
-                  > ODOM,145,3,-2                                # 20Hz odometry
-                  > ODOM,146,2,-1
-< VEL,100,50,0                                                   # Change direction
-                  > ODOM,140,68,-3                                # Now strafing too
+                  > ODOM,195,3,-2                                # 20Hz odometry (mm/s, mm/s, mrad/s)
+                  > ODOM,198,2,-1
+< VEL,200,100,0                                                  # Change direction
+                  > ODOM,192,95,-3                                # Now strafing too
 < STOP
                   > DONE
 
